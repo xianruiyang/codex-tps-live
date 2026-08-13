@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+codex-tps-*.csv
+codex-tps-*.png
+.DS_Store
+outputs/
