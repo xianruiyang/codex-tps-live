@@ -1,45 +1,25 @@
 # codex-tps
 
 `codex-tps` turns a local Codex session into a per-response CSV and a PNG chart
-of effective output tokens per second.
+of effective output tokens per second. It is a native Go executable with no
+language runtime, API calls, or telemetry.
 
-It reads the rollout JSONL already stored in your Codex home. It does not call
-an API, send telemetry, or include prompts, messages, tool arguments, or tool
-results in its outputs.
+## Install
 
-## Run it with UV
+Download the archive for your platform from GitHub Releases, or build it with:
 
-After cloning the repository:
-
-```bash
-uv sync
-uv run codex-tps 019fec05-c5ab-76e0-ab90-5abe5d5c86ad
+```sh
+go install github.com/adenta/codex-tps/cmd/codex-tps@latest
 ```
 
-For a non-default Codex home:
+Andrew's managed Macs install the pinned executable through `codex-ops`.
 
-```bash
-uv run codex-tps 019ff339-7cf5-7273-8346-00319d1cc68b \
-  --codex-home ~/.codex-fast-desktop
-```
+## Usage
 
-Choose a destination with `--output-dir`:
-
-```bash
-uv run codex-tps SESSION_ID --output-dir ./reports
-```
-
-The equivalent module entry point is:
-
-```bash
-uv run python -m codex_tps SESSION_ID
-```
-
-You can also install the command through UV:
-
-```bash
-uv tool install .
-codex-tps SESSION_ID
+```sh
+codex-tps 019fec05-c5ab-76e0-ab90-5abe5d5c86ad
+codex-tps SESSION_ID --codex-home ~/.codex-fast-desktop
+codex-tps SESSION_ID --output-dir ./reports
 ```
 
 ## Outputs
@@ -51,11 +31,9 @@ codex-tps-SESSION_ID.csv
 codex-tps-SESSION_ID.png
 ```
 
-The CSV contains one row per model sampling cycle. The PNG uses real UTC time
-on the x-axis and effective output tokens per second on the y-axis. Each event
-mark stacks visible output TPS and reasoning TPS; a seven-response rolling
-median shows the local trend. Idle periods remain blank. The chart header prints
-the resolved Codex home so reports from isolated installations remain identifiable.
+The CSV contains one row per model sampling cycle. The 1600×900 PNG uses real
+UTC completion time and stacks visible and reasoning throughput, with total TPS
+markers and a seven-response rolling median.
 
 ## What “effective TPS” means
 
@@ -90,9 +68,9 @@ same command usable with isolated Codex Desktop installations.
 
 ## Development
 
-```bash
-uv sync --dev
-uv run pytest
+```sh
+go test ./...
+go vet ./...
 ```
 
 Tests use synthetic rollouts only. The rollout JSONL format is internal to
