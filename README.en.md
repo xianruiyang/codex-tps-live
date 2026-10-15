@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | [English](README.en.md)
 
-A local Windows dashboard for Codex usage and speed. It reads local logs to show tokens, cache usage, TPS, and time trends by conversation, turn, and model response.
+A local Windows dashboard for Codex usage and speed. It reads local logs to show tokens, cache usage, and TPS by conversation, turn, and model response, with speed trends, quota history, and capacity estimates.
 
 Based on [adenta/codex-tps](https://github.com/adenta/codex-tps) v0.2.0 (`be54961`), preserving its MIT copyright notice and offline command. See the [offline CLI guide](docs/offline-cli.en.md) for that command.
 
@@ -38,9 +38,12 @@ The program only reads logs. It does not start Codex or app-server, read credent
 
 # Change the log polling interval
 .\codex-tps-live.exe --interval 2s --open
+
+# Choose a quota-history directory and local namespace (not account identification)
+.\codex-tps-live.exe --data-dir 'D:\monitor-data' --quota-profile work --open
 ```
 
-At startup, discovery defaults to `sessions` files updated within the last seven days, processed from newest to oldest by file modification time. Discovered sessions remain in the current process; new files are discovered every five seconds. Incremental reads and dashboard refreshes default to every 0.5 seconds. Initial loading locates complete boundaries for the latest ten turns from the file tail and reads the preceding cumulative usage checkpoint as a baseline, then parses the selected turns chronologically. Increasing N loads older turns as needed, retaining existing data and showing progress. Decreasing N cancels unnecessary backfill. The program does not write raw logs or a usage ledger to another directory; it rebuilds statistics from the selected logs after restart. Older logs without reliable turn boundaries or a preceding cumulative checkpoint fall back to batched parsing from the beginning.
+At startup, discovery defaults to `sessions` files updated within the last seven days, processed from newest to oldest by file modification time. Discovered sessions remain in the current process; new files are discovered every five seconds. Incremental reads and dashboard refreshes default to every 0.5 seconds. Initial loading locates complete boundaries for the latest ten turns from the file tail and reads the preceding cumulative usage checkpoint as a baseline, then parses the selected turns chronologically. Increasing N loads older turns as needed, retaining existing data and showing progress. Decreasing N cancels unnecessary backfill. Raw logs are not copied. Conversation statistics rebuild from the selected logs after restart, while the quota page separately persists necessary metering records. Older logs without reliable turn boundaries or a preceding cumulative checkpoint fall back to batched parsing from the beginning.
 
 ## Dashboard
 
@@ -74,6 +77,20 @@ Charts load history for their selected time range independently of the dashboard
 
 Charts refresh once per second while background log polling keeps its configured interval. Charts, scripts, and styles are embedded in the portable executable. At runtime the page accesses only `127.0.0.1`; no chart-library installation or internet connection is needed.
 
+## Quota trends and capacity estimates
+
+The separate `/quota` page reads local `token_count.rate_limits` snapshots, without a separate monitor login or network requests. It defaults to 24 hours, with 1-hour, 6-hour, 7-day, 30-day, and custom ranges. Remaining/used percentages are drawn as steps for each `limit_id` and its actual primary or secondary window. The page shows report age, window length, reset time, and backfill progress. Repeated snapshots are not added together. Missing windows stay unavailable, and reaching a reset timestamp prompts for a new report rather than assuming 100% has returned. Small reset-timestamp jitter does not create a new window.
+
+Quota snapshots and per-response model, speed, and token counters are saved under the current computer's `%LOCALAPPDATA%\CodexTPSLive`, in JSONL histories separated by Codex home and `--quota-profile`. Override the location with `--data-dir`. Writes are batched about every two seconds and flushed on normal exit; stable checkpoint keys deduplicate replay after restart. History backfill is independent of N, and recorded quota history survives a smaller N or moved source logs. Records contain no prompts, replies, tool output, or credentials, and are not written to the Codex log directory. Write failures are visible in the page, with pending records kept in memory for retry. A quota profile is only a local namespace, not proof of account identity. After switching accounts, choose another profile and set the analysis start time to when the new account began being used.
+
+Model costs use the [official Codex standard credit table](https://learn.chatgpt.com/docs/pricing), checked on 2026-10-15, with separate uncached input, cached input, and output rates. Every request's full context counts as input. Reasoning is already included in output, and Codex credits have no extra cache-write charge. Reasoning effort affects actual tokens rather than adding another multiplier. The [official speed rules](https://learn.chatgpt.com/docs/agent-configuration/speed) distinguish included subscription usage (Fast 2.5×, Ultrafast 8×) from purchased credits (2× and 6×). Select the applicable basis on the page. Unrecognized models or speed tiers are not treated as free responses.
+
+The default uses the Codex standard credit table, without assuming an unconfirmed long-context subscription surcharge. An optional API long-context scenario applies 2× input/cache and 1.5× output to the entire request when input exceeds **272,000** tokens, then applies the speed multiplier. This comes from [API guidance](https://developers.openai.com/api/docs/pricing) and is explicitly labeled as an assumption, not an official Codex subscription rule. Full context, cache usage, and actual output still count in either scenario.
+
+Estimated full capacity is priced response cost divided by the increase in used percentage points, multiplied by 100. Only the latest continuous segment in the selected range is used. A sustained rollback, changed plan/window, reset-time change over 120 seconds, or reporting gap over six hours starts a new baseline. Concurrent conversations can briefly report an older value: a same-window rollback of at most one percentage point, with observed recovery within two minutes on either side, remains a grey hollow point instead of starting another calibration baseline. Its response tokens still count normally. Recovery is not assumed before it is observed. A capacity range reflects roughly ±1 percentage point of endpoint resolution, not a statistical confidence interval. Small spans remain provisional. Response coverage, model costs, and individual percentage changes are shown. Incomplete backfill or unpriced responses can bias the result downward and leave the upper bound unknown. Without positive movement and priced usage, the curve remains available while estimation waits for more data.
+
+Choose a target model, speed, context input per request, cache ratio, and output size to estimate full/remaining requests, total processed tokens, and output tokens. Total processed input includes repeated context, not just new text. Input-only and output-only scenarios are alternatives and cannot be added together. Estimates assume the selected local logs belong to one account and cover the relevant consumption. Other computers, cloud tasks, shared features, and delayed server reports can change the result. Equivalent credits are not a server-published subscription balance; the purchased-credit table alone does not determine an included plan's total allowance. Estimates are not presented as an official bill.
+
 ## Logs and names
 
 Conversation and turn titles use a short preview of the first user text. If a subagent has no title, its task name is used, then its nickname; actual titles are retained. The sidebar avoids repeating a title identical to the name. Full conversations and tool output are not shown. Older logs lacking valid times or turn boundaries show warnings, unassigned usage, or unavailable TPS instead of fabricated zeroes.
@@ -98,7 +115,7 @@ Cumulative checkpoints provide deduplication; repeated checkpoints are not count
 | --- | --- |
 | `cmd/codex-tps-live/` | Live-monitor entry point |
 | `live_*.go` | Log parsing, incremental reads, statistics, and local HTTP service |
-| `web/` | Embedded dashboard and speed-trends page |
+| `web/` | Embedded dashboard, speed-trends page, and quota page |
 | `build-portable.ps1` | Build and package the Windows x64 executable |
 | `scripts/package-portable.ps1` | Reuse the existing executable to update guides, licenses, and ZIP |
 | `README.md` / `README.en.md` | Chinese / English live-monitor guide |

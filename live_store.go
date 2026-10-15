@@ -154,6 +154,7 @@ type liveMonitor struct {
 	discovered time.Time
 	trendSince time.Time
 	trendViews map[string]liveTrendRequest
+	quota      *liveQuotaHistory
 }
 
 func newLiveMonitor(home string, days int, archived bool, interval time.Duration) *liveMonitor {
@@ -251,6 +252,7 @@ func (m *liveMonitor) poll() {
 		m.mu.Unlock()
 	}
 	m.mu.Lock()
+	m.collectQuota(files)
 	m.updated = time.Now()
 	m.mu.Unlock()
 }

@@ -139,6 +139,7 @@ type liveSession struct {
 	sawStart            bool
 	lastTotal           *liveTokens
 	lastUsageKey        string
+	quotaPending        []liveQuotaRecord
 }
 
 func newLiveSession(id string) *liveSession {
@@ -351,7 +352,9 @@ func (s *liveSession) consume(line []byte, lineNumber int) {
 			s.start = timePointer(at)
 		}
 	case kind == "event_msg" && event == "token_count":
+		previous := s.Metrics.Responses
 		s.consumeUsage(p, at)
+		s.captureQuota(p, at, previous)
 	}
 }
 func textField(m map[string]any, key string) string { v, _ := m[key].(string); return v }

@@ -20,10 +20,10 @@ import (
 	"time"
 )
 
-//go:embed web/index.html web/trends.html
+//go:embed web/index.html web/trends.html web/quota.html
 var liveAssets embed.FS
 
-const liveVersion = "0.15.1"
+const liveVersion = "0.16.0"
 
 // RunLive starts a read-only, loopback-only dashboard. It never launches Codex,
 // reads credentials, makes outbound requests, or writes to the Codex home.
@@ -35,6 +35,8 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	days := flags.Int("days", 7, "discover logs modified in the last N days; 0 includes all history")
 	interval := flags.Duration("interval", 500*time.Millisecond, "local tail polling interval (minimum 200ms)")
 	archived := flags.Bool("include-archived", false, "also discover archived_sessions")
+	dataDir := flags.String("data-dir", "", "local quota history directory (default: user local application data/CodexTPSLive)")
+	quotaProfile := flags.String("quota-profile", "default", "local quota history namespace; does not identify a signed-in account")
 	open := flags.Bool("open", false, "open the local dashboard in the default browser")
 	version := flags.Bool("version", false, "print version")
 	if err := flags.Parse(arguments); err != nil {
@@ -64,6 +66,12 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	address := listener.Addr().String()
 	url := "http://" + address
 	monitor := newLiveMonitor(resolved, *days, *archived, *interval)
+	monitor.quota = openLiveQuotaHistory(resolved, *dataDir, *quotaProfile)
+	defer func() {
+		monitor.mu.Lock()
+		defer monitor.mu.Unlock()
+		monitor.quota.flush(true)
+	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	go func() {
@@ -102,6 +110,19 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 			return
 		}
 		writeLiveJSON(w, monitor.trends(from, to, r.URL.Query().Get("view")))
+	})
+	mux.HandleFunc("/quota", func(w http.ResponseWriter, r *http.Request) {
+		page, _ := liveAssets.ReadFile("web/quota.html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(page)
+	})
+	mux.HandleFunc("/api/quota", func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := liveTrendRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeLiveJSON(w, monitor.quotaData(r, from, to))
 	})
 	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
 		offset := queryInt(r, "offset", 0, 1000000)
@@ -156,6 +177,7 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 		_ = server.Shutdown(shutdown)
 	}()
 	fmt.Fprintf(stdout, "Codex TPS Live\nDashboard: %s\nRead-only log directory: %s\nPress Ctrl+C to stop. No outbound connections or Codex requests.\n", url, resolved)
+	fmt.Fprintf(stdout, "Local quota history: %s\n", monitor.quota.description())
 	if *open {
 		if err := openLiveBrowser(url); err != nil {
 			fmt.Fprintf(stderr, "Open %s in your browser (%v)\n", url, err)
