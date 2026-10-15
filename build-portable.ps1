@@ -8,7 +8,7 @@ $taskRepo = $PSScriptRoot
 $taskDist = Join-Path $taskRepo 'dist'
 $taskOutput = $taskDist
 $taskProgram = Join-Path $taskOutput 'codex-tps-live.exe'
-$taskGo = (Get-Command -Name $GoExe -CommandType Application -ErrorAction Stop).Source
+$taskGo = (Get-Command -Name $GoExe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 New-Item -ItemType Directory -Path $taskOutput -Force | Out-Null
 
 # Build one self-contained executable for baseline Windows x64 machines.
