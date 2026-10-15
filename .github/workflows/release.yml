@@ -32,11 +32,11 @@ jobs:
             压缩包包含 `codex-tps-live.exe`、`启动监控.cmd`、中英文说明 `使用说明.md` / `Usage.en.md`，以及 MIT 英文原文 `LICENSE` / 中文译文 `LICENSE.zh-CN.md`。
             无需安装 Go、Node 或 Python；页面资源全部内嵌，只读本机日志，不代理或修改 Codex 请求。
 
-            新增每个对话、每轮和每次响应的预计积分消耗，复用额度页计价规则，标明未计价与部分覆盖；对话汇总采用最近 N 轮且不重复合并子代理。
+            支持每个对话、每轮和每次响应的预计积分消耗，复用额度页计价规则，标明未计价与部分覆盖；对话汇总采用最近 N 轮且不重复合并子代理。积分统一显示两位小数，内部计算保留原精度。
             额度页首屏直接显示满额、剩余预计积分及对应混合 token 容量；缓存、非缓存和输出比例来自真实记录，样本不足时参考 Astra / Sol。对话明细、速度趋势和额度趋势采用统一导航，清楚标记当前页面，滚动时仍可切换。两处积分口径共享设置；API 长上下文倍率仍明确标为可选假设。
             使用方法与统计口径见压缩包中的 `使用说明.md`。
 
-            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. This version adds per-conversation/turn/response credit estimates with explicit unpriced coverage, prominent full/remaining credits alongside mixed-token capacity, and consistent navigation across all three pages. Dashboard and quota credit settings are shared. English instructions are included in `Usage.en.md`.
+            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. Includes per-conversation/turn/response credit estimates with explicit unpriced coverage, prominent full/remaining credits alongside mixed-token capacity, and consistent navigation across all three pages. Credits now display exactly two decimal places while calculations retain full precision. Dashboard and quota credit settings are shared. English instructions are included in `Usage.en.md`.
           files: |
             codex-tps-live-windows-amd64.zip
             SHA256SUMS
