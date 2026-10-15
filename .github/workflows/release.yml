@@ -33,10 +33,10 @@ jobs:
             无需安装 Go、Node 或 Python；页面资源全部内嵌，只读本机日志，不代理或修改 Codex 请求。
 
             支持按对话、轮次和模型响应查看 token、缓存、TPS，并提供可筛选、缩放和平移的模型速度趋势图。
-            新增独立额度趋势页：本地持久保存额度曲线，结合模型、缓存与速度规则校准满额等效积分，并估计指定模型的剩余可用 token。API 长上下文倍率作为明确标注的可选情景。
+            额度页突出满额与剩余的混合 token 容量；缓存、非缓存和输出比例来自真实记录，目标模型样本不足时参考 Astra / Sol，并明确显示来源。保留日志提供的小数百分比，只有整数时不推造小数。API 长上下文倍率作为明确标注的可选情景。
             使用方法与统计口径见压缩包中的 `使用说明.md`。
 
-            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. Includes local quota history and model capacity estimates. English instructions are included in `Usage.en.md`.
+            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. The quota page emphasizes full/remaining mixed-token capacity using observed cache/input/output proportions, with explicit Astra / Sol fallback and source-provided fractional percentages. English instructions are included in `Usage.en.md`.
           files: |
             codex-tps-live-windows-amd64.zip
             SHA256SUMS

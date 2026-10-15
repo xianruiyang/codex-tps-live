@@ -5,7 +5,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -80,22 +79,32 @@ type liveQuotaModelCost struct {
 }
 
 type liveQuotaTarget struct {
-	Model            string   `json:"model"`
-	Tier             string   `json:"tier"`
-	Prompt           float64  `json:"prompt"`
-	CachedRatio      float64  `json:"cached_ratio"`
-	Output           float64  `json:"output"`
-	PerRequest       *float64 `json:"credits_per_request"`
-	RequestsFull     *float64 `json:"requests_full"`
-	RequestsRemain   *float64 `json:"requests_remaining"`
-	TokensFull       *float64 `json:"total_tokens_full"`
-	TokensRemain     *float64 `json:"total_tokens_remaining"`
-	InputRemain      *float64 `json:"input_tokens_remaining"`
-	CachedRemain     *float64 `json:"cached_tokens_remaining"`
-	OutputRemain     *float64 `json:"output_tokens_remaining"`
-	PureInputRemain  *float64 `json:"pure_input_tokens_remaining"`
-	PureOutputRemain *float64 `json:"pure_output_tokens_remaining"`
-	LongContext      bool     `json:"long_context"`
+	Model        string       `json:"model"`
+	Tier         string       `json:"tier"`
+	TokensFull   *float64     `json:"total_tokens_full"`
+	TokensRemain *float64     `json:"total_tokens_remaining"`
+	MixedRate    *float64     `json:"credits_per_million_mixed_tokens"`
+	Mix          liveQuotaMix `json:"mix"`
+	LongContext  bool         `json:"long_context"`
+}
+
+type liveQuotaMix struct {
+	Model          string    `json:"model"`
+	Source         string    `json:"source"`
+	Responses      int       `json:"responses"`
+	MinResponses   int       `json:"min_responses"`
+	Sufficient     bool      `json:"sufficient"`
+	Fallback       bool      `json:"fallback"`
+	From           time.Time `json:"from"`
+	To             time.Time `json:"to"`
+	NonCached      int64     `json:"non_cached"`
+	Cached         int64     `json:"cached"`
+	Output         int64     `json:"output"`
+	Total          int64     `json:"total"`
+	NonCachedRatio float64   `json:"non_cached_ratio"`
+	CachedRatio    float64   `json:"cached_ratio"`
+	OutputRatio    float64   `json:"output_ratio"`
+	LongContext    int       `json:"long_context_responses"`
 }
 
 type liveQuotaEstimate struct {
@@ -145,14 +154,6 @@ type liveQuotaData struct {
 	Rules        liveQuotaRules    `json:"rules"`
 	Estimate     liveQuotaEstimate `json:"estimate"`
 	Changes      []liveQuotaChange `json:"changes"`
-}
-
-func quotaFloat(r *http.Request, name string, fallback, low, high float64) float64 {
-	n, err := strconv.ParseFloat(r.URL.Query().Get(name), 64)
-	if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
-		return fallback
-	}
-	return max(low, min(high, n))
 }
 
 func quotaRate(model string) (liveQuotaModelRate, bool) {
@@ -218,10 +219,81 @@ func newQuotaTarget(r *http.Request) liveQuotaTarget {
 	if tier == "" {
 		tier = "default"
 	}
-	return liveQuotaTarget{Model: model, Tier: tier, Prompt: quotaFloat(r, "prompt", 128000, 0, 1050000), CachedRatio: quotaFloat(r, "cached", .8, 0, 1), Output: quotaFloat(r, "output", 2000, 0, 128000)}
+	return liveQuotaTarget{Model: model, Tier: tier, Mix: liveQuotaMix{Source: "insufficient", MinResponses: 10}}
 }
 
 func quotaPointer(n float64) *float64 { return &n }
+
+func quotaTargetMix(target liveQuotaTarget, records []liveQuotaRecord, bucket string, rules liveQuotaRules) liveQuotaTarget {
+	// Choose the target's observed workload after ten responses. Until then,
+	// prefer whichever of Astra and Sol has more actual records in this range.
+	// A small sample remains visible as provisional; never invent a fixed mix.
+	targetModel := target.Model
+	if rate, ok := quotaRate(targetModel); ok {
+		targetModel = rate.Model
+	}
+	byModel := map[string][]liveQuotaRecord{}
+	for _, record := range records {
+		if record.Bucket != bucket || record.Usage == nil {
+			continue
+		}
+		u := record.Usage
+		t := u.Tokens
+		if t.Input < 0 || t.Output < 0 || t.Cached < 0 || t.Cached > t.Input || (t.Input == 0 && t.Output == 0) {
+			continue
+		}
+		model := u.Model
+		if rate, ok := quotaRate(model); ok {
+			model = rate.Model
+		}
+		if model == targetModel || model == "gpt-6-astra" || model == "gpt-6.1-sol" {
+			byModel[model] = append(byModel[model], record)
+		}
+	}
+	model := targetModel
+	if len(byModel[model]) < target.Mix.MinResponses {
+		reference := "gpt-6-astra"
+		if len(byModel["gpt-6.1-sol"]) > len(byModel[reference]) {
+			reference = "gpt-6.1-sol"
+		}
+		if len(byModel[reference]) > 0 {
+			model = reference
+		}
+	}
+	samples := byModel[model]
+	if len(samples) == 0 {
+		return target
+	}
+	mix := liveQuotaMix{Model: model, Source: "target", Responses: len(samples), MinResponses: target.Mix.MinResponses,
+		Sufficient: len(samples) >= target.Mix.MinResponses, Fallback: model != targetModel, From: samples[0].At, To: samples[len(samples)-1].At}
+	if mix.Fallback {
+		mix.Source = "fallback"
+	}
+	cost, valid := 0.0, true
+	for _, record := range samples {
+		t := record.Usage.Tokens
+		mix.NonCached += t.Input - t.Cached
+		mix.Cached += t.Cached
+		mix.Output += t.Output
+		// Reprice each real request, preserving its cache split and context
+		// length. Applying a long-context rule to an average would be wrong.
+		pricedCost, priced, long := quotaCost(liveQuotaUsage{Model: target.Model, ServiceTier: target.Tier, Tokens: t}, rules)
+		cost += pricedCost
+		valid = valid && priced
+		if long {
+			mix.LongContext++
+		}
+	}
+	mix.Total = mix.NonCached + mix.Cached + mix.Output
+	mix.NonCachedRatio = float64(mix.NonCached) / float64(mix.Total)
+	mix.CachedRatio = float64(mix.Cached) / float64(mix.Total)
+	mix.OutputRatio = float64(mix.Output) / float64(mix.Total)
+	target.Mix, target.LongContext = mix, mix.LongContext > 0
+	if valid && cost > 0 {
+		target.MixedRate = quotaPointer(cost * 1e6 / float64(mix.Total))
+	}
+	return target
+}
 
 func quotaWindowChanged(a, b liveQuotaPoint) bool {
 	return a.WindowMinutes != b.WindowMinutes ||
@@ -423,7 +495,7 @@ func quotaUsageBetween(records []liveQuotaRecord, bucket string, from, to time.T
 }
 
 func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules liveQuotaRules, target liveQuotaTarget, pending int) (liveQuotaEstimate, []liveQuotaChange) {
-	e := liveQuotaEstimate{Status: "insufficient", Target: target, Notes: []string{}, Models: []liveQuotaModelCost{}}
+	e := liveQuotaEstimate{Status: "insufficient", Target: quotaTargetMix(target, records, group.Bucket, rules), Notes: []string{}, Models: []liveQuotaModelCost{}}
 	changes := []liveQuotaChange{}
 	points := group.Points
 	anchor := points[0]
@@ -499,38 +571,18 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 	} else {
 		e.Notes = append(e.Notes, "当前连续段还没有可配对的正向百分点变化和可计价响应用量，先记录曲线，等待更多数据。")
 	}
-	u := liveQuotaUsage{Model: target.Model, ServiceTier: target.Tier, Tokens: liveTokens{Input: int64(target.Prompt), Cached: int64(target.Prompt * target.CachedRatio), Output: int64(target.Output)}}
-	cost, valid, long := quotaCost(u, rules)
-	e.Target.LongContext = long
-	if valid && cost > 0 {
-		e.Target.PerRequest = quotaPointer(cost)
+	if e.Target.MixedRate != nil {
+		costPerToken := *e.Target.MixedRate / 1e6
 		if e.Full != nil {
-			requests := math.Floor(*e.Full / cost)
-			e.Target.RequestsFull, e.Target.TokensFull = quotaPointer(requests), quotaPointer(requests*(target.Prompt+target.Output))
+			e.Target.TokensFull = quotaPointer(math.Floor(*e.Full / costPerToken))
 		}
 		if e.Remaining != nil {
-			requests := math.Floor(*e.Remaining / cost)
-			e.Target.RequestsRemain, e.Target.TokensRemain = quotaPointer(requests), quotaPointer(requests*(target.Prompt+target.Output))
-			e.Target.InputRemain = quotaPointer(requests * target.Prompt)
-			e.Target.CachedRemain = quotaPointer(requests * target.Prompt * target.CachedRatio)
-			e.Target.OutputRemain = quotaPointer(requests * target.Output)
-			rate, _ := quotaRate(target.Model)
-			multiplier := 1.0
-			if target.Tier == "fast" || target.Tier == "priority" {
-				multiplier = rules.Fast
-			}
-			if target.Tier == "ultrafast" {
-				multiplier = rules.Ultra
-			}
-			inputFactor, outputFactor := 1.0, 1.0
-			if long && rules.Context == "api_assumption" {
-				inputFactor, outputFactor = 2, 1.5
-			}
-			e.Target.PureInputRemain = quotaPointer(*e.Remaining * 1e6 / (rate.Input * multiplier * inputFactor))
-			e.Target.PureOutputRemain = quotaPointer(*e.Remaining * 1e6 / (rate.Output * multiplier * outputFactor))
+			e.Target.TokensRemain = quotaPointer(math.Floor(*e.Remaining / costPerToken))
 		}
+	} else if e.Target.Mix.Responses == 0 {
+		e.Notes = append(e.Notes, "所选范围内目标模型及 Astra / Sol 都没有有效用量记录，暂不假定缓存、非缓存和输出比例，等待实际样本。")
 	} else {
-		e.Notes = append(e.Notes, "目标模型、速度组合或请求结构无法按当前规则计价，指定模型的可用 token 暂不估算。")
+		e.Notes = append(e.Notes, "目标模型或速度组合无法按当前规则计价，指定模型的混合 token 暂不估算。")
 	}
 	return e, changes
 }
