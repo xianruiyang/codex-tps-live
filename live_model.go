@@ -86,20 +86,21 @@ func (m liveMetrics) rates() liveRates {
 }
 
 type liveResponse struct {
-	Index             int        `json:"index"`
-	TurnIndex         int        `json:"turn_index"`
-	TurnID            string     `json:"turn_id"`
-	Model             string     `json:"model"`
-	Effort            string     `json:"effort"`
-	ServiceTier       string     `json:"service_tier"`
-	ServiceTierSource string     `json:"service_tier_source,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	CompletedAt       time.Time  `json:"completed_at"`
-	RecordedAt        time.Time  `json:"recorded_at"`
-	Seconds           float64    `json:"seconds"`
-	Tokens            liveTokens `json:"tokens"`
-	TPS               liveRates  `json:"tps"`
-	TimingNote        string     `json:"timing_note,omitempty"`
+	Index             int              `json:"index"`
+	TurnIndex         int              `json:"turn_index"`
+	TurnID            string           `json:"turn_id"`
+	Model             string           `json:"model"`
+	Effort            string           `json:"effort"`
+	ServiceTier       string           `json:"service_tier"`
+	ServiceTierSource string           `json:"service_tier_source,omitempty"`
+	StartedAt         time.Time        `json:"started_at"`
+	CompletedAt       time.Time        `json:"completed_at"`
+	RecordedAt        time.Time        `json:"recorded_at"`
+	Seconds           float64          `json:"seconds"`
+	Tokens            liveTokens       `json:"tokens"`
+	TPS               liveRates        `json:"tps"`
+	TimingNote        string           `json:"timing_note,omitempty"`
+	Credits           *liveCreditUsage `json:"credits,omitempty"`
 }
 type liveTurn struct {
 	ID                 string         `json:"id"`

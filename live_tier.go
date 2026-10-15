@@ -88,14 +88,19 @@ func fillResponseServiceTier(s *liveSession, response *liveResponse, sessions ma
 	response.ServiceTier, response.ServiceTierSource = inheritedServiceTier(s, sessions, at, false)
 }
 
-func tierSessionView(f *liveFile, now time.Time, window int, sessions map[string]*liveFile) liveSessionView {
+func tierSessionView(f *liveFile, now time.Time, window int, sessions map[string]*liveFile, policies ...liveQuotaRules) liveSessionView {
 	v := sessionView(f, now, window)
+	rules := creditRules(policies)
+	for _, turn := range f.session.Turns[windowStart(f.session, window):] {
+		v.Credits.add(turnCredits(f.session, turn, sessions, rules))
+	}
 	if !v.Indexing && v.ServiceTierSource == "" {
 		v.ServiceTier, v.ServiceTierSource = inheritedServiceTier(f.session, sessions, time.Time{}, true)
 	}
 	if v.LatestResponse != nil {
 		copy := *v.LatestResponse
 		fillResponseServiceTier(f.session, &copy, sessions)
+		priceResponse(&copy, rules)
 		v.LatestResponse = &copy
 	}
 	return v

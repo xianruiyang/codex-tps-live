@@ -273,33 +273,34 @@ func (m *liveMonitor) sessions() map[string]*liveFile {
 }
 
 type liveSessionView struct {
-	ID                string        `json:"id"`
-	Title             string        `json:"title"`
-	CWD               string        `json:"cwd"`
-	Model             string        `json:"model"`
-	Effort            string        `json:"effort"`
-	ServiceTier       string        `json:"service_tier"`
-	ServiceTierSource string        `json:"service_tier_source,omitempty"`
-	ParentID          string        `json:"parent_id,omitempty"`
-	AgentNickname     string        `json:"agent_nickname,omitempty"`
-	AgentRole         string        `json:"agent_role,omitempty"`
-	AgentPath         string        `json:"agent_path,omitempty"`
-	Status            string        `json:"status"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	LastResponseAt    time.Time     `json:"last_response_at"`
-	Turns             int           `json:"turns"`
-	TotalTurns        int           `json:"total_turns"`
-	TotalKnown        bool          `json:"total_known"`
-	HistoryPending    bool          `json:"history_pending"`
-	Window            int           `json:"window"`
-	Metrics           liveMetrics   `json:"metrics"`
-	TPS               liveRates     `json:"tps"`
-	Rate30            liveTokens    `json:"recorded_tokens_30s"`
-	Warnings          []string      `json:"warnings"`
-	Indexing          bool          `json:"indexing"`
-	PendingLine       bool          `json:"pending_line"`
-	LatestResponse    *liveResponse `json:"latest_response"`
+	ID                string          `json:"id"`
+	Title             string          `json:"title"`
+	CWD               string          `json:"cwd"`
+	Model             string          `json:"model"`
+	Effort            string          `json:"effort"`
+	ServiceTier       string          `json:"service_tier"`
+	ServiceTierSource string          `json:"service_tier_source,omitempty"`
+	ParentID          string          `json:"parent_id,omitempty"`
+	AgentNickname     string          `json:"agent_nickname,omitempty"`
+	AgentRole         string          `json:"agent_role,omitempty"`
+	AgentPath         string          `json:"agent_path,omitempty"`
+	Status            string          `json:"status"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	LastResponseAt    time.Time       `json:"last_response_at"`
+	Turns             int             `json:"turns"`
+	TotalTurns        int             `json:"total_turns"`
+	TotalKnown        bool            `json:"total_known"`
+	HistoryPending    bool            `json:"history_pending"`
+	Window            int             `json:"window"`
+	Metrics           liveMetrics     `json:"metrics"`
+	TPS               liveRates       `json:"tps"`
+	Rate30            liveTokens      `json:"recorded_tokens_30s"`
+	Warnings          []string        `json:"warnings"`
+	Indexing          bool            `json:"indexing"`
+	PendingLine       bool            `json:"pending_line"`
+	LatestResponse    *liveResponse   `json:"latest_response"`
+	Credits           liveCreditUsage `json:"credits"`
 }
 
 func windowStart(s *liveSession, window int) int { return max(0, len(s.Turns)-window) }
@@ -362,24 +363,26 @@ func sessionView(f *liveFile, now time.Time, window int) liveSessionView {
 }
 
 type liveSnapshot struct {
-	Home       string            `json:"codex_home"`
-	Days       int               `json:"days"`
-	IntervalMS int64             `json:"interval_ms"`
-	UpdatedAt  time.Time         `json:"updated_at"`
-	Errors     []string          `json:"errors"`
-	Sessions   []liveSessionView `json:"sessions"`
+	Home        string            `json:"codex_home"`
+	Days        int               `json:"days"`
+	IntervalMS  int64             `json:"interval_ms"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	Errors      []string          `json:"errors"`
+	Sessions    []liveSessionView `json:"sessions"`
+	CreditRules liveCreditPolicy  `json:"credit_rules"`
 }
 
-func (m *liveMonitor) snapshot(window int) liveSnapshot {
+func (m *liveMonitor) snapshot(window int, policies ...liveQuotaRules) liveSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, f := range m.files {
 		f.requestWindow(window)
 	}
-	result := liveSnapshot{Home: m.home, Days: m.days, IntervalMS: m.interval.Milliseconds(), UpdatedAt: m.updated, Errors: m.errors, Sessions: []liveSessionView{}}
+	rules := creditRules(policies)
+	result := liveSnapshot{Home: m.home, Days: m.days, IntervalMS: m.interval.Milliseconds(), UpdatedAt: m.updated, Errors: m.errors, Sessions: []liveSessionView{}, CreditRules: creditPolicy(rules)}
 	sessions := m.sessions()
 	for _, f := range sessions {
-		result.Sessions = append(result.Sessions, tierSessionView(f, time.Now(), window, sessions))
+		result.Sessions = append(result.Sessions, tierSessionView(f, time.Now(), window, sessions, rules))
 	}
 	sort.Slice(result.Sessions, func(i, j int) bool {
 		a, b := result.Sessions[i], result.Sessions[j]
@@ -400,17 +403,19 @@ func (m *liveMonitor) snapshot(window int) liveSnapshot {
 
 type liveTurnView struct {
 	*liveTurn
-	TPS      liveRates `json:"tps"`
-	Position int       `json:"position"`
+	TPS      liveRates       `json:"tps"`
+	Position int             `json:"position"`
+	Credits  liveCreditUsage `json:"credits"`
 }
 type liveDetail struct {
-	Session liveSessionView `json:"session"`
-	Turns   []liveTurnView  `json:"turns"`
-	Total   int             `json:"total"`
-	Offset  int             `json:"offset"`
+	Session     liveSessionView  `json:"session"`
+	Turns       []liveTurnView   `json:"turns"`
+	Total       int              `json:"total"`
+	Offset      int              `json:"offset"`
+	CreditRules liveCreditPolicy `json:"credit_rules"`
 }
 
-func (m *liveMonitor) detail(id string, offset, limit, window int) (liveDetail, bool) {
+func (m *liveMonitor) detail(id string, offset, limit, window int, policies ...liveQuotaRules) (liveDetail, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sessions := m.sessions()
@@ -421,7 +426,8 @@ func (m *liveMonitor) detail(id string, offset, limit, window int) (liveDetail, 
 	s := f.session
 	f.requestWindow(window)
 	start := windowStart(s, window)
-	out := liveDetail{Session: tierSessionView(f, time.Now(), window, sessions), Turns: []liveTurnView{}, Total: len(s.Turns) - start, Offset: offset}
+	rules := creditRules(policies)
+	out := liveDetail{Session: tierSessionView(f, time.Now(), window, sessions, rules), Turns: []liveTurnView{}, Total: len(s.Turns) - start, Offset: offset, CreditRules: creditPolicy(rules)}
 	for i := len(s.Turns) - 1 - offset; i >= start && len(out.Turns) < limit; i-- {
 		copy := *s.Turns[i]
 		if copy.ServiceTierSource == "" {
@@ -432,11 +438,11 @@ func (m *liveMonitor) detail(id string, offset, limit, window int) (liveDetail, 
 				copy.Title = name
 			}
 		}
-		out.Turns = append(out.Turns, liveTurnView{&copy, copy.Metrics.rates(), len(s.Turns) - i})
+		out.Turns = append(out.Turns, liveTurnView{liveTurn: &copy, TPS: copy.Metrics.rates(), Position: len(s.Turns) - i, Credits: turnCredits(s, s.Turns[i], sessions, rules)})
 	}
 	return out, true
 }
-func (m *liveMonitor) responses(id, turnID string) ([]liveResponse, bool) {
+func (m *liveMonitor) responses(id, turnID string, policies ...liveQuotaRules) ([]liveResponse, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	sessions := m.sessions()
@@ -449,8 +455,10 @@ func (m *liveMonitor) responses(id, turnID string) ([]liveResponse, bool) {
 		return nil, false
 	}
 	rows := append([]liveResponse{}, t.Responses...)
+	rules := creditRules(policies)
 	for i := range rows {
 		fillResponseServiceTier(f.session, &rows[i], sessions)
+		priceResponse(&rows[i], rules)
 	}
 	return rows, true
 }

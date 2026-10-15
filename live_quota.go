@@ -201,10 +201,10 @@ func quotaRules(r *http.Request) liveQuotaRules {
 			{"title": "Codex Fast / Ultrafast 倍率", "url": "https://learn.chatgpt.com/docs/agent-configuration/speed"},
 			{"title": "API 长上下文规则（仅供情景假设）", "url": "https://developers.openai.com/api/docs/pricing"},
 		}}
-	if r.URL.Query().Get("basis") == "credits" {
+	if r != nil && r.URL.Query().Get("basis") == "credits" {
 		rules.Basis, rules.Fast, rules.Ultra = "credits", 2, 6
 	}
-	if r.URL.Query().Get("context") == "api_assumption" {
+	if r != nil && r.URL.Query().Get("context") == "api_assumption" {
 		rules.Context = "api_assumption"
 		rules.ContextNote = "情景假设：单次输入 >272,000 token 时，整次请求输入/缓存 2×、输出 1.5×，再叠加速度倍率。此规则来自 API，未获 Codex 订阅积分口径确认。"
 	}

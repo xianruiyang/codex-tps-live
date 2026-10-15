@@ -23,7 +23,7 @@ import (
 //go:embed web/index.html web/trends.html web/quota.html
 var liveAssets embed.FS
 
-const liveVersion = "0.16.1"
+const liveVersion = "0.17.0"
 
 // RunLive starts a read-only, loopback-only dashboard. It never launches Codex,
 // reads credentials, makes outbound requests, or writes to the Codex home.
@@ -97,7 +97,9 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(page)
 	})
-	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) { writeLiveJSON(w, monitor.snapshot(liveTurnWindow(r))) })
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		writeLiveJSON(w, monitor.snapshot(liveTurnWindow(r), quotaRules(r)))
+	})
 	mux.HandleFunc("/trends", func(w http.ResponseWriter, r *http.Request) {
 		page, _ := liveAssets.ReadFile("web/trends.html")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -126,7 +128,7 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	})
 	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
 		offset := queryInt(r, "offset", 0, 1000000)
-		detail, ok := monitor.detail(r.URL.Query().Get("id"), offset, 50, liveTurnWindow(r))
+		detail, ok := monitor.detail(r.URL.Query().Get("id"), offset, 50, liveTurnWindow(r), quotaRules(r))
 		if !ok {
 			http.Error(w, "conversation not found", http.StatusNotFound)
 			return
@@ -134,7 +136,7 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 		writeLiveJSON(w, detail)
 	})
 	mux.HandleFunc("/api/responses", func(w http.ResponseWriter, r *http.Request) {
-		rows, ok := monitor.responses(r.URL.Query().Get("id"), r.URL.Query().Get("turn"))
+		rows, ok := monitor.responses(r.URL.Query().Get("id"), r.URL.Query().Get("turn"), quotaRules(r))
 		if !ok {
 			http.Error(w, "turn not found", http.StatusNotFound)
 			return
