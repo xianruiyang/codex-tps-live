@@ -1,14 +1,16 @@
 # Codex TPS Live
 
+[简体中文](README.md) | [English](README.en.md)
+
 Windows 本地 Codex 用量与速度监控工具，以只读方式分析本机日志，按对话、轮次和模型响应展示 token、缓存、TPS 与时间趋势。
 
 基于 [adenta/codex-tps](https://github.com/adenta/codex-tps) v0.2.0（`be54961`），保留上游 MIT 版权声明和离线命令。离线 CLI 的说明见 [docs/offline-cli.md](docs/offline-cli.md)。
 
 ## 便携版运行
 
-将 `codex-tps-live-windows-amd64.zip` 复制到其他电脑，完整解压到任意目录，双击解压目录中的 `启动监控.cmd`。适用于 Windows 10/11 x64，支持中文和空格路径，无需安装或管理员权限。它启动本机程序并打开默认浏览器；保持控制台运行，按 Ctrl+C 退出。
+[下载 Windows x64 便携版](https://github.com/xianruiyang/codex-tps-live/releases/latest/download/codex-tps-live-windows-amd64.zip)，或前往 [Releases](https://github.com/xianruiyang/codex-tps-live/releases) 选择版本。完整解压到任意目录后，双击其中的 `启动监控.cmd`。适用于 Windows 10/11 x64，支持中文和空格路径，无需安装或管理员权限。它启动本机程序并打开默认浏览器；保持控制台运行，按 Ctrl+C 退出。
 
-便携包只有 `codex-tps-live.exe`、`启动监控.cmd`、`使用说明.md`、`LICENSE` 四个文件。页面资源内嵌在 exe 中，不需要项目源码、`web` 文件夹、Go、Node、Python、API Key 或联网；不会打包本机 Codex 日志、认证文件或截图。启动器通过自身位置寻找 exe，不依赖盘符、用户名、解压位置或当前工作目录。启动器也支持透传下面的命令行参数。
+便携包包含六个文件：`codex-tps-live.exe`、`启动监控.cmd`、中文 `使用说明.md`、英文 `Usage.en.md`、英文 MIT 原文 `LICENSE` 和中文译文 `LICENSE.zh-CN.md`。页面资源内嵌在 exe 中，不需要项目源码、`web` 文件夹、Go、Node、Python、API Key 或联网；不会打包本机 Codex 日志、认证文件或截图。启动器通过自身位置寻找 exe，不依赖盘符、用户名、解压位置或当前工作目录。启动器也支持透传下面的命令行参数。
 
 也可以在 PowerShell 中运行：
 
@@ -99,7 +101,9 @@ Windows 本地 Codex 用量与速度监控工具，以只读方式分析本机�
 | `web/` | 内嵌的对话面板与速度趋势页面 |
 | `build-portable.ps1` | 构建 Windows x64 程序并打包 |
 | `scripts/package-portable.ps1` | 复用现有程序，更新说明、许可证和 ZIP |
-| `docs/offline-cli.md` | 上游离线命令说明 |
+| `README.md` / `README.en.md` | 中文 / 英文实时监控说明 |
+| `docs/offline-cli.md` / `docs/offline-cli.en.md` | 中文 / 英文上游离线命令说明 |
+| `LICENSE` / `LICENSE.zh-CN.md` | MIT 英文原文 / 中文译文 |
 | `dist/` | 最新未压缩便携版，不纳入 Git |
 | `outputs/` | 本机预览和历史构建归档，不纳入 Git |
 
@@ -117,8 +121,8 @@ pwsh -File .\build-portable.ps1
 pwsh -File .\scripts\package-portable.ps1
 ```
 
-现有上游 Release 工作流构建的是离线 CLI；Windows 便携版以本节脚本为发布入口。
+推送 `v*` 版本标签后，GitHub Actions 会在 Windows runner 上调用同一个 `build-portable.ps1`，自动发布 Windows 便携 ZIP 和 `SHA256SUMS` 到对应 Release。发布标签与 `live_server.go` 中的程序版本应保持一致。GitHub 自动生成的 Source code 压缩包用于开发；直接运行请下载 Release Assets 中的 `codex-tps-live-windows-amd64.zip`。
 
 ## 开源协议
 
-本项目采用 [MIT License](LICENSE)。保留上游 `codex-tps` 的版权声明，Windows 实时监控扩展同样按 MIT 协议发布；分发源码和便携版时均附带该许可证。
+本项目采用 [MIT License 英文原文](LICENSE)，另附 [中文译文](LICENSE.zh-CN.md)便于阅读，以英文原文为准。保留上游 `codex-tps` 的版权声明，Windows 实时监控扩展同样按 MIT 协议发布；分发源码和便携版时均附带该许可证。

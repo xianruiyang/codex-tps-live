@@ -1,4 +1,4 @@
-name: Release
+name: Windows Portable Release
 on:
   push:
     tags: ["v*"]
@@ -6,28 +6,36 @@ permissions:
   contents: write
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23.x"
-      - name: Build archives
-        shell: bash
+          go-version-file: go.mod
+      - name: Build Windows portable package
+        shell: pwsh
         run: |
-          set -euo pipefail
-          mkdir release
-          for target in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
-            os=${target%/*}; arch=${target#*/}; name="codex-tps-${GITHUB_REF_NAME}-${os}-${arch}"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "release/codex-tps" ./cmd/codex-tps
-            tar -C release -czf "release/${name}.tar.gz" codex-tps
-            rm release/codex-tps
-          done
-          cd release
-          sha256sum *.tar.gz > SHA256SUMS
+          ./build-portable.ps1
+          $archive = 'codex-tps-live-windows-amd64.zip'
+          $checksum = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'SHA256SUMS'), "$checksum  $archive`n", [System.Text.UTF8Encoding]::new($false))
       - uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          name: Codex TPS Live ${{ github.ref_name }}
+          body: |
+            Windows 10/11 x64 本地 Codex token 与 TPS 实时监控工具。
+
+            1. 下载下方 Assets 中的 `codex-tps-live-windows-amd64.zip`。
+            2. 完整解压到任意目录。
+            3. 双击 `启动监控.cmd`，程序会打开本机浏览器面板。
+
+            压缩包包含 `codex-tps-live.exe`、`启动监控.cmd`、中英文说明 `使用说明.md` / `Usage.en.md`，以及 MIT 英文原文 `LICENSE` / 中文译文 `LICENSE.zh-CN.md`。
+            无需安装 Go、Node 或 Python；页面资源全部内嵌，只读本机日志，不代理或修改 Codex 请求。
+
+            支持按对话、轮次和模型响应查看 token、缓存、TPS，并提供可筛选、缩放和平移的模型速度趋势图。
+            使用方法与统计口径见压缩包中的 `使用说明.md`。
+
+            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. English instructions are included in `Usage.en.md`.
           files: |
-            release/*.tar.gz
-            release/SHA256SUMS
+            codex-tps-live-windows-amd64.zip
+            SHA256SUMS
