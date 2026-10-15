@@ -1,5 +1,15 @@
-dist/
-codex-tps-*.csv
-codex-tps-*.png
+# Generated release files
+/dist/
+/codex-tps-live-windows-*.zip
+
+# Local analysis output and previews
+/codex-tps-*.csv
+/codex-tps-*.png
+/preview*.jpg
+/preview*.jpeg
+/preview*.png
+/outputs/
+
+# Operating system files
 .DS_Store
-outputs/
+Thumbs.db

@@ -1,83 +1,124 @@
-# codex-tps
+# Codex TPS Live
 
-`codex-tps` turns a local Codex session into a per-response CSV and a PNG chart
-of effective output tokens per second. It is a native Go executable with no
-language runtime, API calls, or telemetry.
+Windows 本地 Codex 用量与速度监控工具，以只读方式分析本机日志，按对话、轮次和模型响应展示 token、缓存、TPS 与时间趋势。
 
-## Install
+基于 [adenta/codex-tps](https://github.com/adenta/codex-tps) v0.2.0（`be54961`），保留上游 MIT 版权声明和离线命令。离线 CLI 的说明见 [docs/offline-cli.md](docs/offline-cli.md)。
 
-Download the archive for your platform from GitHub Releases, or build it with:
+## 便携版运行
 
-```sh
-go install github.com/adenta/codex-tps/cmd/codex-tps@latest
+将 `codex-tps-live-windows-amd64.zip` 复制到其他电脑，完整解压到任意目录，双击解压目录中的 `启动监控.cmd`。适用于 Windows 10/11 x64，支持中文和空格路径，无需安装或管理员权限。它启动本机程序并打开默认浏览器；保持控制台运行，按 Ctrl+C 退出。
+
+便携包只有 `codex-tps-live.exe`、`启动监控.cmd`、`使用说明.md`、`LICENSE` 四个文件。页面资源内嵌在 exe 中，不需要项目源码、`web` 文件夹、Go、Node、Python、API Key 或联网；不会打包本机 Codex 日志、认证文件或截图。启动器通过自身位置寻找 exe，不依赖盘符、用户名、解压位置或当前工作目录。启动器也支持透传下面的命令行参数。
+
+也可以在 PowerShell 中运行：
+
+```powershell
+.\codex-tps-live.exe --open
 ```
 
-Andrew's managed Macs install the pinned executable through `codex-ops`.
+默认页面为 `http://127.0.0.1:8765`。日志目录依次取 `--codex-home`、当前电脑的 `CODEX_HOME`、当前 Windows 用户目录下的 `.codex`（通常为 `%USERPROFILE%\.codex`）；无需照搬开发电脑的目录。自定义目录应指向含 `sessions` 的 Codex 数据目录。目标电脑还没有日志时，页面提示目录不可用或暂无对话，产生日志后自动发现。页面没有 CDN、外部字体或第三方脚本。
 
-## Usage
+升级时先关闭旧监控程序，再覆盖解压目录中的发布文件并重新启动，原有 Codex 对话不受影响。源码构建会同时更新最新 ZIP 和未压缩的 `dist` 目录；本机直接双击 `dist\启动监控.cmd` 即可运行，也可以将整个 `dist` 目录复制到其他电脑使用。
 
-```sh
-codex-tps 019fec05-c5ab-76e0-ab90-5abe5d5c86ad
-codex-tps SESSION_ID --codex-home ~/.codex-fast-desktop
-codex-tps SESSION_ID --output-dir ./reports
+程序只读日志，不启动 Codex/app-server，不读取认证文件，不代理或修改 Codex 的请求。浏览器只访问本机监听地址。关闭程序即可停止监控；关闭或暂停页面不停止后台采集。它仍会使用本机 CPU、内存和磁盘，不能承诺零资源开销。
+
+## 参数
+
+```powershell
+# 指定其他 Codex 日志目录
+.\codex-tps-live.exe --codex-home 'D:\my-codex' --open
+
+# 包含全部历史日志以及归档对话
+.\codex-tps-live.exe --days 0 --include-archived --open
+
+# 使用可用的随机本机端口
+.\codex-tps-live.exe --port 0 --open
+
+# 调整日志轮询频率
+.\codex-tps-live.exe --interval 2s --open
 ```
 
-## Outputs
+默认启动发现最近 7 天有更新的 `sessions` 文件，按文件更新时间从新到旧处理。已经发现的会话继续保留在当前进程中；新文件每 5 秒发现一次。默认每 0.5 秒增量读取文件和刷新页面。首次从文件尾部定位最近 10 轮的完整边界，并读取前一个累计用量检查点作为基线，再按时间顺序解析选中的轮次。扩大 N 时按需补读更早轮次，期间保留已加载数据并提示进度；缩小 N 后停止不再需要的补读。程序不把原始日志或账本写到额外目录；重启时从所选日志重新建立统计。缺少可靠轮次边界或此前累计检查点的旧日志会回退到从头分批解析。
 
-Each invocation writes exactly two report files:
+## 面板
 
-```text
-codex-tps-SESSION_ID.csv
-codex-tps-SESSION_ID.png
+- 左侧标签显示当前日志记录的模型和推理档位。子代理优先显示任务路径中的名称，下方显示昵称、角色和任务标题；详情展示完整任务路径。支持名称、昵称、角色、标题、模型、工作目录和 ID 搜索。
+- 模型旁显示服务层标签：`ultra fast`、`fast`、`default`、`unknow`，覆盖左侧对话、轮次及每次模型响应。子代理补全的状态标记“继承”；历史响应优先使用自身记录，继承值匹配该轮开始时主对话的记录。
+- “全部 / 主对话 / 子代理”独立筛选，可与“进行中”状态筛选组合；父子用量不合并。
+- 顶部设置最近 N 轮，默认 **10**。进行中的轮次也计入；左侧用量、卡片、轮次列表和 CSV 导出统一使用该范围。设置保存在当前浏览器的本机站点存储中。
+- 左侧对话按最近一次新增、通过去重的模型响应上报时间倒序排列。只有新增响应才更新排序时间，普通日志、状态与模型设置变化只更新显示；暂无响应的新对话按创建时间定位，时间相同时按 ID 固定排序。排序时间独立于最近 N 轮统计范围；补读更早历史不替换最新响应时间。刷新时复用已有标签，内容未变则不重绘，顺序未变则不移动。
+- 轮次及轮次内模型响应为最新在前，使用“第 N 轮 / 第 N 次”的正向编号，按编号从大到小显示。尚未读取全部历史时，轮次编号从已加载的最早一轮起算，补读更早历史后重新建立；悬停轮次标签可查看编号范围。已加载轮数不标成全对话总轮数。
+- 用户轮次显示输入、缓存命中、缓存写入、输出、输出 TPS 和模型响应耗时；展开查看每次模型响应。
+- 轮次表显示“首 Token 耗时（TTFT）”，直接读取完成事件的 `time_to_first_token_ms`，以秒显示并保留毫秒精度。进行中显示“等待上报”，缺少有效值时显示“—”。主对话和子代理均适用。该指标每轮一个，完成后才上报，未明确区分首个可见文字、推理或工具调用；不分摊到每次模型响应，不从 TPS 的分母中扣除。
+- 同一轮次的多个模型响应相加；子代理作为独立对话显示，不叠加到父对话。
+- 主卡片显示最新一次响应 TPS 和用量上报距今多久，另列最近 N 轮的平均 TPS；推理/可见输出分项及近 30 秒已记录消耗速度继续保留。
+- 从浏览器导出当前对话最近 N 轮的响应明细 CSV，包含 `turn_id` 和轮次内响应编号。加载期间按钮标明已加载轮数，导出该时刻已加载的响应；完成后自动恢复最近 N 轮范围。
+- 支持暂停显示、深浅主题及窄屏布局。暂停显示期间后台仍继续采集。
+- 顶部“速度趋势”进入独立图表页，按模型分图，以推理档位和服务层区分曲线，可切换带点折线或散点。
+
+## 速度趋势
+
+趋势页位于 `/trends`，默认显示最近 **24 小时**，支持 1、6、12、18、24 小时、3 天、7 天快捷时间跨度和自定义起止时间。可筛选模型、推理档位、服务层以及主对话/子代理，并切换输出 TPS、可见输出 TPS。横轴为用量上报时间，刻度随时间跨度调整；完整视图的纵轴为 TPS，从零开始。
+
+每张图可以独立操作：在绘图区滚动鼠标滚轮，以鼠标位置为中心同时缩放时间轴和 TPS 轴；按住 Shift 时只缩放纵轴，按住 Ctrl 时只缩放横轴。放大后按住鼠标左键拖动平移。双击绘图区或点击“自适应”，按当前时间视图中的数据自动调整两轴范围并留出边距；若当前时间视图内无数据，则自适应该图全部数据。点击“恢复全图”恢复完整范围，也可使用该图的 +/− 按钮缩放。图中显示两轴各自的缩放倍数。缩放和平移限定在已选时间范围与该图完整 TPS 范围内，不改变时间跨度、滤波窗口或原始数据；实时刷新和窗口调整大小时保留视图，切换时间范围或数据筛选时恢复全图。绘图区外的滚轮仍用于页面滚动与浏览器原有快捷操作。
+
+默认按 **10 分钟时间窗口**滤波，窗口可设为 1–1440 分钟。推荐“耗时加权吞吐量”：同一模型、档位和服务层内，窗口 TPS = 输出 token 总数 ÷ 响应耗时总和；可见 TPS 使用非推理输出 token。它等于按响应耗时加权的 TPS，长响应权重更大；多个并发会话的耗时分别累加，因此不是按墙钟时间计算的总吞吐量。也可选中位数、等权均值或关闭滤波，设置保存在本机浏览器。
+
+每个聚合点位于时间窗口中间，大小表示累计响应耗时，悬停可查看样本数、token、耗时权重和原始 TPS 范围。当前未结束的窗口随新响应更新。空窗口不补零；遇到空窗，或相邻窗口的实际样本间隔超过窗口长度时，折线断开。连线只帮助观察窗口间趋势，不代表期间持续输出。
+
+默认叠加淡色原始散点，也可关闭叠加；悬停可查看每次通过去重且有可靠计时的响应用量记录。点击图下方图例，可独立隐藏或恢复对应档位、服务层的曲线与散点；图例始终保留，隐藏状态随实时刷新保留，各模型互不影响，自适应只使用当前显示的曲线。关闭滤波时只画原始散点，不直接连接。原始输出 TPS 包含推理及首 token 等待，沿用对话明细的计算口径。无法计时的响应不画成零值，并单独显示数量；滤波只影响图表显示，不改变采集数据和对话明细。
+
+图表按所选时间范围独立补读，不受主面板最近 N 轮限制；需要更早内容时会扩大发现范围，并从完整轮次边界逐步加载。补读期间保留已加载的图，并显示范围尚未读完，完成后自动补齐。主面板仍按自身 N 轮统计。归档日志继续由启动参数 `--include-archived` 控制。
+
+图表页面每秒刷新一次，后台日志轮询保持原设置。图表、脚本及样式全部内嵌在便携 exe 中，运行时仅访问 `127.0.0.1`，无需安装图表库或联网。
+
+## 日志与名称
+
+对话标题与轮次标题取首次用户文本的短预览；子代理缺少标题时，以任务名代替，其次使用昵称，已有实际标题则保留。左侧不重复显示与名称相同的标题。不显示完整聊天或工具输出。没有有效时间或轮次边界的旧日志会显示警告、未归属用量或“TPS 不可用”，不会伪造零 TPS。
+
+子代理名称来自本地 `session_meta` 的 `agent_path`、`agent_nickname` 和 `agent_role`，优先使用顶层字段，缺失时读取 `source.subagent.thread_spawn` 的同名字段。即使从尾部加载最近轮次，也会读取文件头的元数据，无需扫描父对话或联网。仅有昵称时直接显示昵称；未记录名称的旧日志显示“名称尚未记录”。
+
+服务层标签读取本地 `thread_settings_applied` 事件中的 `thread_settings.service_tier`：`fast` 或 `priority` 显示 `fast`，`default` 显示 `default`，`ultrafast` 显示 `ultra fast`；缺失、`auto` 或其他无法确定的值显示 `unknow`。从尾部加载时也读取选中轮次边界与前一个累计用量检查点之间的设置记录，并保留其时间。从 [Codex 官方子代理规则](https://learn.chatgpt.com/docs/agent-configuration/subagents)可知，子代理的服务层跟随主对话偏好；子代理没有自身设置记录时，程序沿父对话关联找到主对话并补全，标注“继承”。对话标签显示主对话当前偏好，历史轮次及响应按轮次开始时间匹配当时的主对话设置，不会用当前开关替换旧记录。主对话日志或对应历史设置不在已加载范围时仍为未知，可扩大 N 或通过 `--days 0` 加载相关对话。全局配置不用于回填历史。该标记表示请求设置，不保证服务端实际采用相同处理层级。判定同时参考 [Codex 配置文档](https://learn.chatgpt.com/docs/config-file/config-reference)和 [Fast mode 官方说明](https://developers.openai.com/api/docs/guides/fast-mode)，运行时无需访问这些页面。
+
+## 统计口径
+
+输入是每次模型请求处理的上下文 token，不仅是新输入的消息。缓存命中属于输入，推理属于输出，不能重复相加。缓存写入单列；“非命中输入”是输入减去缓存命中，并不排除缓存写入。
+
+输出 TPS 沿用 codex-tps 的 **effective output TPS**：输出 token / 日志可测的模型响应耗时。包含首 token 等待，排除响应之间的工具执行时间。主卡片取最近 N 轮内最新一个模型响应的 TPS，标注其上报时间，进行中时说明正在等待下一次用量；不会把旧值称作当前生成速度。窗口平均 TPS 为有可靠计时的输出之和 / 对应响应耗时之和，不能直接平均各个 TPS。缺少可靠计时的响应仍计入 token，但不进入平均 TPS 的分子或分母；页面显示计时覆盖数量。
+
+近 30 秒消耗速度 = 所选轮次内最近 30 秒日志上报的 token / 30 秒。它度量用量到达日志的速度，与输出 TPS 不同。Codex 通常在响应完成后才上报用量，因此数字会跳变；进行中的响应没有可靠的逐 token 计数，不以字符数估算隐藏推理或未上报用量。这里的统计是本地日志分析，不是最终账单。
+
+累计检查点用于去重；重复检查点不再计数。程序等待半行写完后才处理，发现文件截断、重建或迁移时重新建立该对话统计。若计数器重置或某些日志字段缺失，界面说明数据限制。分轮次依赖 `task_started`/`turn_context` 的 `turn_id`，一次用户任务可能包含多次模型响应。
+
+## 项目结构
+
+| 路径 | 用途 |
+| --- | --- |
+| `cmd/codex-tps-live/` | 实时监控程序入口 |
+| `live_*.go` | 日志解析、增量读取、统计与本地 HTTP 服务 |
+| `web/` | 内嵌的对话面板与速度趋势页面 |
+| `build-portable.ps1` | 构建 Windows x64 程序并打包 |
+| `scripts/package-portable.ps1` | 复用现有程序，更新说明、许可证和 ZIP |
+| `docs/offline-cli.md` | 上游离线命令说明 |
+| `dist/` | 最新未压缩便携版，不纳入 Git |
+| `outputs/` | 本机预览和历史构建归档，不纳入 Git |
+
+## 源码构建
+
+```powershell
+pwsh -File .\build-portable.ps1
 ```
 
-The CSV contains one row per model sampling cycle. The 1600×900 PNG uses real
-UTC completion time and stacks visible and reasoning throughput, with total TPS
-markers and a seven-response rolling median.
+构建需要 PowerShell 7、PATH 中的 Go 和上游绘图依赖，首次下载依赖需要网络；Go 未加入 PATH 时可传 `-GoExe` 指定本机 Go 可执行文件。构建脚本通过自身目录定位源码，生成未压缩的 `dist` 目录和上述便携 ZIP，固定覆盖最新发布文件；使用 Windows x64 基线指令集并禁用 CGO。上述构建工具仅用于生成发布包，使用便携版的电脑无需安装它们。生成后的实时工具运行期间没有出站请求。原有 `cmd/codex-tps` 保留 CSV/PNG 离线分析行为。
 
-## What “effective TPS” means
+只更新便携版的说明、许可证及压缩包时，可复用 `dist` 中的现有程序，无需重新编译或重启监控：
 
-Codex rollouts contain exact per-response token usage but not a complete
-token-by-token timing trace. This utility therefore calculates:
-
-```text
-effective TPS = output tokens / model-response elapsed time
+```powershell
+pwsh -File .\scripts\package-portable.ps1
 ```
 
-The response window starts after the latest input or previous usage boundary
-and ends at the last model-generated item. Tool execution time is excluded.
-First-token latency is included. This makes the result useful for comparing
-real Codex responsiveness, but it is not a pure decoder-only benchmark.
+现有上游 Release 工作流构建的是离线 CLI；Windows 便携版以本节脚本为发布入口。
 
-`output_tokens` includes reasoning tokens. The report also exposes:
+## 开源协议
 
-- `reasoning_output_tokens`
-- `visible_output_tokens = output_tokens - reasoning_output_tokens`
-- total, reasoning, and visible TPS
-
-## Codex homes
-
-The lookup order is:
-
-1. `--codex-home PATH`
-2. the `CODEX_HOME` environment variable
-3. `~/.codex`
-
-Both active `sessions/` and `archived_sessions/` are searched. This makes the
-same command usable with isolated Codex Desktop installations.
-
-## Development
-
-```sh
-go test ./...
-go vet ./...
-```
-
-Tests use synthetic rollouts only. The rollout JSONL format is internal to
-Codex and may evolve; unsupported or incomplete records are reported clearly.
-Legacy rollouts that predate reliable response timing are rejected rather than
-reported with misleading TPS values.
-
-## License
-
-MIT
+本项目采用 [MIT License](LICENSE)。保留上游 `codex-tps` 的版权声明，Windows 实时监控扩展同样按 MIT 协议发布；分发源码和便携版时均附带该许可证。
