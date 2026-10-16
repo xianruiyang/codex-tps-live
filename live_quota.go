@@ -138,6 +138,7 @@ type liveQuotaChange struct {
 	Priced       int       `json:"priced_responses"`
 	Unpriced     int       `json:"unpriced_responses"`
 	Segment      int       `json:"segment"`
+	Excluded     bool      `json:"excluded_from_calibration,omitempty"`
 }
 
 type liveQuotaData struct {
@@ -500,6 +501,7 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 	points := group.Points
 	anchor := points[0]
 	currentStart, currentEnd := points[0], points[0]
+	baselineReady := false
 	staleCount := 0
 	for _, point := range points[1:] {
 		if point.Stale {
@@ -508,6 +510,7 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 		}
 		if point.Segment != anchor.Segment {
 			anchor, currentStart, currentEnd = point, point, point
+			baselineReady = false
 			continue
 		}
 		if point.UsedPercent <= anchor.UsedPercent {
@@ -516,25 +519,33 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 		cost, priced, unpriced, _, _, _ := quotaUsageBetween(records, group.Bucket, anchor.At, point.At, rules)
 		delta := point.UsedPercent - anchor.UsedPercent
 		change := liveQuotaChange{At: point.At, FromPercent: anchor.UsedPercent, ToPercent: point.UsedPercent, DeltaPercent: delta, Credits: cost, Priced: priced, Unpriced: unpriced, Segment: point.Segment}
-		if cost > 0 {
-			change.Full = quotaPointer(cost * 100 / delta)
+		if !baselineReady {
+			// The query or segment may start partway through a percentage step.
+			// Its first observed rise establishes a baseline, not a full interval.
+			change.Excluded = true
+			currentStart, currentEnd = point, point
+			baselineReady = true
+		} else {
+			if cost > 0 {
+				change.Full = quotaPointer(cost * 100 / delta)
+			}
+			currentEnd = point
 		}
 		changes = append(changes, change)
-		anchor, currentEnd = point, point
+		anchor = point
 	}
 	latest := points[len(points)-1]
 	e.From, e.To = currentStart.At, currentEnd.At
 	e.DeltaPercent = currentEnd.UsedPercent - currentStart.UsedPercent
-	if e.DeltaPercent <= 0 {
-		e.To = latest.At
+	if e.DeltaPercent > 0 {
+		e.Credits, e.Priced, e.Unpriced, e.UnknownTier, e.LongContext, e.Models = quotaUsageBetween(records, group.Bucket, e.From, e.To, rules)
 	}
-	e.Credits, e.Priced, e.Unpriced, e.UnknownTier, e.LongContext, e.Models = quotaUsageBetween(records, group.Bucket, e.From, e.To, rules)
 	for _, change := range changes {
-		if change.Segment == latest.Segment {
+		if change.Segment == latest.Segment && !change.Excluded {
 			e.Intervals++
 		}
 	}
-	e.Notes = append(e.Notes, "估算只使用所选范围最新连续额度段；重置、百分比回退、周期变化或超过 6 小时的上报空窗重新建立基线。", "等效积分是模型加权后的本机估计，不是服务端公开的订阅积分余额；假设这些日志属于同一账号，且涵盖同期扣量。其他设备、云任务和共享功能的消耗会使估计偏低。", "百分点上报可能取整并存在延迟；区间仅反映端点合计约 ±1 个百分点的分辨率，不是统计置信区间。")
+	e.Notes = append(e.Notes, "估算只使用所选范围最新连续额度段；重置、百分比回退、周期变化或超过 6 小时的上报空窗重新建立基线。每段首次正向百分比变化仅建立基线，之前的起始区间可能不完整，保留明细但不参与积分、百分点和有效区间校准。", "等效积分是模型加权后的本机估计，不是服务端公开的订阅积分余额；假设这些日志属于同一账号，且涵盖同期扣量。其他设备、云任务和共享功能的消耗会使估计偏低。", "百分点上报可能取整并存在延迟；区间仅反映端点合计约 ±1 个百分点的分辨率，不是统计置信区间。")
 	if pending > 0 {
 		// Backfill is explicit in the UI; do not silently treat missing history as zero.
 		e.Notes = append(e.Notes, "历史仍在补读，目前的用量覆盖不完整，估算会随补读变化。")
@@ -569,7 +580,13 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 			e.Status = "estimated"
 		}
 	} else {
-		e.Notes = append(e.Notes, "当前连续段还没有可配对的正向百分点变化和可计价响应用量，先记录曲线，等待更多数据。")
+		if !baselineReady {
+			e.Notes = append(e.Notes, "当前连续段尚未观察到首次正向百分比变化，等待建立校准基线；曲线继续记录。")
+		} else if e.DeltaPercent <= 0 {
+			e.Notes = append(e.Notes, "已排除起始不完整区间并建立基线，等待下一次正向百分比变化形成完整校准区间。")
+		} else {
+			e.Notes = append(e.Notes, "完整校准区间尚无可计价响应用量，先记录曲线，等待更多数据。")
+		}
 	}
 	if e.Target.MixedRate != nil {
 		costPerToken := *e.Target.MixedRate / 1e6

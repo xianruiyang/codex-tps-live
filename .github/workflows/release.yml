@@ -25,6 +25,8 @@ jobs:
           body: |
             Windows 10/11 x64 本地 Codex token 与 TPS 实时监控工具。
 
+            修正额度估算基线：每个连续段的首次正向百分比变化只建立基线，排除起始不完整区间的积分和百分点；明细保留该区间并标明不参与校准。没有后续完整区间时继续记录曲线、等待数据。
+
             1. 下载下方 Assets 中的 `codex-tps-live-windows-amd64.zip`。
             2. 完整解压到任意目录。
             3. 双击 `启动监控.cmd`，程序会打开本机浏览器面板。
@@ -36,7 +38,7 @@ jobs:
             额度页首屏直接显示满额、剩余预计积分及对应混合 token 容量；缓存、非缓存和输出比例来自真实记录，样本不足时参考 Astra / Sol。对话明细、速度趋势和额度趋势采用统一导航，清楚标记当前页面，滚动时仍可切换。两处积分口径共享设置；API 长上下文倍率仍明确标为可选假设。
             使用方法与统计口径见压缩包中的 `使用说明.md`。
 
-            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. Includes per-conversation/turn/response credit estimates with explicit unpriced coverage, prominent full/remaining credits alongside mixed-token capacity, and consistent navigation across all three pages. Credits now display exactly two decimal places while calculations retain full precision. Dashboard and quota credit settings are shared. English instructions are included in `Usage.en.md`.
+            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. Fixes quota calibration by establishing each segment's baseline at its first positive percentage change and excluding the initial incomplete interval's credits and percentage delta. That interval remains visible and marked as excluded; estimation waits for a subsequent complete interval. Includes per-conversation/turn/response credit estimates with explicit unpriced coverage, prominent full/remaining credits alongside mixed-token capacity, and consistent navigation across all three pages. Credits display exactly two decimal places while calculations retain full precision. Dashboard and quota credit settings are shared. English instructions are included in `Usage.en.md`.
           files: |
             codex-tps-live-windows-amd64.zip
             SHA256SUMS
