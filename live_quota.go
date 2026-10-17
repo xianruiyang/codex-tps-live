@@ -305,10 +305,11 @@ func quotaWindowChanged(a, b liveQuotaPoint) bool {
 
 func quotaShortRollback(points []liveQuotaPoint, index int, accepted liveQuotaPoint) bool {
 	current := points[index]
-	if current.UsedPercent >= accepted.UsedPercent || accepted.UsedPercent-current.UsedPercent > 1 || current.At.Sub(accepted.At) > 2*time.Minute || quotaWindowChanged(accepted, current) {
+	if current.UsedPercent >= accepted.UsedPercent || current.At.Sub(accepted.At) > 2*time.Minute || quotaWindowChanged(accepted, current) {
 		return false
 	}
-	// Require observed recovery, rather than assuming every downward move is stale.
+	// Concurrent sessions may report older snapshots more than one point behind.
+	// Require same-window recovery, rather than assuming any rollback is stale.
 	for _, next := range points[index+1:] {
 		if next.At.Sub(current.At) > 2*time.Minute || quotaWindowChanged(accepted, next) {
 			break
@@ -349,7 +350,7 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 	data.HistoryPath, data.HistoryError = m.quota.path, m.quota.errorText
 	records := make([]liveQuotaRecord, 0, len(m.quota.records))
 	for _, record := range m.quota.records {
-		if !record.At.Before(from) && !record.At.After(to) {
+		if !record.At.After(to) {
 			records = append(records, record)
 		}
 	}
@@ -359,6 +360,10 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 		}
 		return records[i].At.Before(records[j].At)
 	})
+	// The chart's moving start must not discard a recorded calibration baseline.
+	// Keep all history through to for segmentation; only the target mix uses from.
+	displayStart := sort.Search(len(records), func(i int) bool { return !records[i].At.Before(from) })
+	displayRecords := records[displayStart:]
 	groups := map[string]*liveQuotaSeries{}
 	for _, record := range records {
 		for name, window := range map[string]*liveQuotaWindow{"primary": record.Primary, "secondary": record.Secondary} {
@@ -419,14 +424,20 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 	if group := groups[selected]; group != nil && len(group.Points) > 0 {
 		last := group.Points[len(group.Points)-1]
 		data.Latest = &last
-		data.Estimate, data.Changes = estimateQuota(group, records, data.Rules, data.Estimate.Target, data.PendingFiles)
-		for i, j := 0, len(data.Changes)-1; i < j; i, j = i+1, j-1 {
-			data.Changes[i], data.Changes[j] = data.Changes[j], data.Changes[i]
+		target := quotaTargetMix(data.Estimate.Target, displayRecords, group.Bucket, data.Rules)
+		estimate, changes := estimateQuota(group, records, data.Rules, target, data.PendingFiles)
+		data.Estimate = estimate
+		for i := len(changes) - 1; i >= 0; i-- {
+			if !changes[i].At.Before(from) {
+				data.Changes = append(data.Changes, changes[i])
+			}
 		}
 	}
 	for i := range data.Series {
 		// Keep both ends of each plateau, without returning thousands of identical points.
 		points := data.Series[i].Points
+		start := sort.Search(len(points), func(j int) bool { return !points[j].At.Before(from) })
+		points = points[start:]
 		compact := make([]liveQuotaPoint, 0, len(points))
 		for j, point := range points {
 			if j > 0 && j+1 < len(points) && !point.Stale && !points[j-1].Stale && !points[j+1].Stale && point.Segment == points[j-1].Segment && point.Segment == points[j+1].Segment && point.UsedPercent == points[j-1].UsedPercent && point.UsedPercent == points[j+1].UsedPercent {
@@ -496,7 +507,7 @@ func quotaUsageBetween(records []liveQuotaRecord, bucket string, from, to time.T
 }
 
 func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules liveQuotaRules, target liveQuotaTarget, pending int) (liveQuotaEstimate, []liveQuotaChange) {
-	e := liveQuotaEstimate{Status: "insufficient", Target: quotaTargetMix(target, records, group.Bucket, rules), Notes: []string{}, Models: []liveQuotaModelCost{}}
+	e := liveQuotaEstimate{Status: "insufficient", Target: target, Notes: []string{}, Models: []liveQuotaModelCost{}}
 	changes := []liveQuotaChange{}
 	points := group.Points
 	anchor := points[0]
@@ -520,7 +531,7 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 		delta := point.UsedPercent - anchor.UsedPercent
 		change := liveQuotaChange{At: point.At, FromPercent: anchor.UsedPercent, ToPercent: point.UsedPercent, DeltaPercent: delta, Credits: cost, Priced: priced, Unpriced: unpriced, Segment: point.Segment}
 		if !baselineReady {
-			// The query or segment may start partway through a percentage step.
+			// Collected history or a new segment may start partway through a step.
 			// Its first observed rise establishes a baseline, not a full interval.
 			change.Excluded = true
 			currentStart, currentEnd = point, point
@@ -545,13 +556,13 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 			e.Intervals++
 		}
 	}
-	e.Notes = append(e.Notes, "估算只使用所选范围最新连续额度段；重置、百分比回退、周期变化或超过 6 小时的上报空窗重新建立基线。每段首次正向百分比变化仅建立基线，之前的起始区间可能不完整，保留明细但不参与积分、百分点和有效区间校准。", "等效积分是模型加权后的本机估计，不是服务端公开的订阅积分余额；假设这些日志属于同一账号，且涵盖同期扣量。其他设备、云任务和共享功能的消耗会使估计偏低。", "百分点上报可能取整并存在延迟；区间仅反映端点合计约 ±1 个百分点的分辨率，不是统计置信区间。")
+	e.Notes = append(e.Notes, "额度校准使用截至所选结束时间、已采集历史中的最新连续额度段，不随图表起点滚动；曲线、变化明细和混合 token 比例仍使用图表时间范围。仅使用已采集记录，不代表已覆盖整个额度周期。重置、未恢复的百分比回退、周期变化或超过 6 小时的上报空窗重新建立基线。每段首次正向百分比变化仅建立基线，之前的起始区间可能不完整，保留明细但不参与积分、百分点和有效区间校准。", "等效积分是模型加权后的本机估计，不是服务端公开的订阅积分余额；假设这些日志属于同一账号，且涵盖同期扣量。其他设备、云任务和共享功能的消耗会使估计偏低。", "百分点上报可能取整并存在延迟；区间仅反映端点合计约 ±1 个百分点的分辨率，不是统计置信区间。")
 	if pending > 0 {
 		// Backfill is explicit in the UI; do not silently treat missing history as zero.
 		e.Notes = append(e.Notes, "历史仍在补读，目前的用量覆盖不完整，估算会随补读变化。")
 	}
 	if staleCount > 0 {
-		e.Notes = append(e.Notes, fmt.Sprintf("所选范围内 %d 条同周期短时回退在 2 分钟内恢复，按迟到快照标记并保留，不参与容量校准；未观察到恢复的回退仍重新分段。", staleCount))
+		e.Notes = append(e.Notes, fmt.Sprintf("截至所选结束时间的已采集历史内，%d 条同周期短时回退在 2 分钟内恢复，按迟到快照标记并保留，不受回退百分点幅度限制，不用该快照重新建立基线；对应响应用量仍计入校准。未观察到恢复的回退仍重新分段。", staleCount))
 	}
 	if latest.Expired {
 		e.Notes = append(e.Notes, "最近快照已超过重置时间，剩余量暂不可确认；等待新的额度上报。")
