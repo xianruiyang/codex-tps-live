@@ -65,7 +65,7 @@ function zoomPlot(card,factor,anchor={x:.5,y:.5},focusAction,axis='both'){
 }
 function fitPlot(card,focusAction){
  const p=card.plot,v=card.viewport||p.view;let samples=p.timePoints.filter(s=>s.at>=v.from&&s.at<=v.to);if(!samples.length)samples=p.timePoints;if(!samples.length)return;
- let from=Infinity,to=-Infinity;for(const s of samples){from=Math.min(from,s.at);to=Math.max(to,s.at);}const values=p.fitPoints.filter(s=>s.start==null?s.at>=from&&s.at<=to:s.start<=to&&s.end>=from),range=plotValueRange(values);for(const s of values){from=Math.min(from,s.at);to=Math.max(to,s.at);}const timePadding=Math.max((to-from)*.04,(v.to-v.from)*.02,1000);changePlotView(card,{from:from-timePadding,to:to+timePadding,...range},focusAction);
+ let from=Infinity,to=-Infinity;for(const s of samples){from=Math.min(from,s.at);to=Math.max(to,s.at);}const values=p.fitPoints.filter(s=>s.start==null?s.at>=from&&s.at<=to:s.start<=to&&s.end>=from),range=plotValueRange(values);for(const s of values){from=Math.min(from,s.at);to=Math.max(to,s.at);}const timePadding=Math.max((to-from)*.04,1000);changePlotView(card,{from:from-timePadding,to:to+timePadding,...range},focusAction);
 }
 function plotPosition(card,event){
  const p=card.plot,g=p.geometry,matrix=p.chart.getScreenCTM();if(!matrix)return null;const {x,y}=new DOMPoint(event.clientX,event.clientY).matrixTransform(matrix.inverse());if(x<g.L||x>g.L+g.pw||y<g.T||y>g.T+g.ph)return null;return {x:(x-g.L)/g.pw,y:(y-g.T)/g.ph,width:g.pw*Math.hypot(matrix.a,matrix.b),height:g.ph*Math.hypot(matrix.c,matrix.d)};
