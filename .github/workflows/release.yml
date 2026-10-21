@@ -25,7 +25,11 @@ jobs:
           body: |
             Windows 10/11 x64 本地 Codex token 与 TPS 实时监控工具。
 
-            修正额度估算基线：每个连续段的首次正向百分比变化只建立基线，排除起始不完整区间的积分和百分点；明细保留该区间并标明不参与校准。没有后续完整区间时继续记录曲线、等待数据。
+            本次更新：
+            - 额度校准使用截至所选结束时间的完整历史，切换图表时间范围不再改变校准基线；继续排除首个不完整百分点区间。
+            - 修正速度趋势的默认纵轴、自适应和恢复全图：默认按可见趋势曲线确定比例，原始极值可通过“查看全部散点”单独查看。
+            - 滚轮缩放以鼠标位置为中心；Shift 只缩放纵轴，Ctrl 只缩放横轴。自适应留白不再受之前的缩放影响。
+            - 切换原始散点保留缩放，切换图例保留手动时间范围并重算纵轴；完善空时间段与全部曲线隐藏时的提示和操作状态。
 
             1. 下载下方 Assets 中的 `codex-tps-live-windows-amd64.zip`。
             2. 完整解压到任意目录。
@@ -34,11 +38,15 @@ jobs:
             压缩包包含 `codex-tps-live.exe`、`启动监控.cmd`、中英文说明 `使用说明.md` / `Usage.en.md`，以及 MIT 英文原文 `LICENSE` / 中文译文 `LICENSE.zh-CN.md`。
             无需安装 Go、Node 或 Python；页面资源全部内嵌，只读本机日志，不代理或修改 Codex 请求。
 
-            支持每个对话、每轮和每次响应的预计积分消耗，复用额度页计价规则，标明未计价与部分覆盖；对话汇总采用最近 N 轮且不重复合并子代理。积分统一显示两位小数，内部计算保留原精度。
-            额度页首屏直接显示满额、剩余预计积分及对应混合 token 容量；缓存、非缓存和输出比例来自真实记录，样本不足时参考 Astra / Sol。对话明细、速度趋势和额度趋势采用统一导航，清楚标记当前页面，滚动时仍可切换。两处积分口径共享设置；API 长上下文倍率仍明确标为可选假设。
             使用方法与统计口径见压缩包中的 `使用说明.md`。
 
-            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. Fixes quota calibration by establishing each segment's baseline at its first positive percentage change and excluding the initial incomplete interval's credits and percentage delta. That interval remains visible and marked as excluded; estimation waits for a subsequent complete interval. Includes per-conversation/turn/response credit estimates with explicit unpriced coverage, prominent full/remaining credits alongside mixed-token capacity, and consistent navigation across all three pages. Credits display exactly two decimal places while calculations retain full precision. Dashboard and quota credit settings are shared. English instructions are included in `Usage.en.md`.
+            Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. English instructions are included in `Usage.en.md`.
+
+            Changes in this release:
+            - Quota calibration uses all history up to the selected end time, so changing the displayed time range no longer shifts the calibration baseline. The initial incomplete percentage interval remains excluded.
+            - Corrects default trend scaling, fit, and reset. Raw outliers have a separate “Show all raw points” action.
+            - Anchors wheel zoom to the pointer, with Shift for Y only and Ctrl for X only. Fit padding no longer depends on previous zoom.
+            - Preserves zoom when toggling raw points and the manual time range when toggling a series, while refitting Y. Improves empty-range and all-hidden states.
           files: |
             codex-tps-live-windows-amd64.zip
             SHA256SUMS
