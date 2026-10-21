@@ -309,13 +309,18 @@ func quotaShortRollback(points []liveQuotaPoint, index int, accepted liveQuotaPo
 		return false
 	}
 	// Concurrent sessions may report older snapshots more than one point behind.
-	// Require same-window recovery, rather than assuming any rollback is stale.
+	// Sparse reporting can delay recovery beyond two minutes. Require observed
+	// same-window recovery within the normal continuity limit, with no low
+	// reports persisting beyond the short rollback burst.
 	for _, next := range points[index+1:] {
-		if next.At.Sub(current.At) > 2*time.Minute || quotaWindowChanged(accepted, next) {
+		if next.At.Sub(accepted.At) > 6*time.Hour || quotaWindowChanged(accepted, next) {
 			break
 		}
 		if next.UsedPercent >= accepted.UsedPercent {
 			return true
+		}
+		if next.At.Sub(current.At) > 2*time.Minute {
+			return false
 		}
 	}
 	return false
@@ -562,7 +567,7 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 		e.Notes = append(e.Notes, "历史仍在补读，目前的用量覆盖不完整，估算会随补读变化。")
 	}
 	if staleCount > 0 {
-		e.Notes = append(e.Notes, fmt.Sprintf("截至所选结束时间的已采集历史内，%d 条同周期短时回退在 2 分钟内恢复，按迟到快照标记并保留，不受回退百分点幅度限制，不用该快照重新建立基线；对应响应用量仍计入校准。未观察到恢复的回退仍重新分段。", staleCount))
+		e.Notes = append(e.Notes, fmt.Sprintf("截至所选结束时间的已采集历史内，%d 条同周期短时回退已观察到恢复，按迟到快照标记并保留，不受回退百分点幅度限制，不用该快照重新建立基线。回退须距前一有效快照不超过 2 分钟，低位上报持续不超过 2 分钟；后续恢复允许等待下一次稀疏上报，但不得超过前一有效快照后的 6 小时或跨周期。对应响应用量仍计入校准，未观察到恢复或持续低位上报时仍重新分段。", staleCount))
 	}
 	if latest.Expired {
 		e.Notes = append(e.Notes, "最近快照已超过重置时间，剩余量暂不可确认；等待新的额度上报。")
