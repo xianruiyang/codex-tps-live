@@ -209,7 +209,7 @@ func (s *liveSession) setTitle(p map[string]any) {
 	raw := strings.TrimSpace(messageText(p))
 	// Codex persists bootstrap/context envelopes as user-role messages too.
 	// Use actual request text for navigation, rather than injected workspace metadata.
-	for _, prefix := range []string{"# AGENTS.md instructions", "<environment_context>", "<external_codex_apps_open_page>", "<send_user_message_question_reply>", "<recommended_plugins>", "<permissions instructions>", "<skills_instructions>", "<codex_apps_"} {
+	for _, prefix := range []string{"# AGENTS.md instructions", "## Referenced chats with Codex:", "<environment_context>", "<external_codex_apps_open_page>", "<send_user_message_question_reply>", "<recommended_plugins>", "<permissions instructions>", "<skills_instructions>", "<codex_apps_"} {
 		if strings.HasPrefix(raw, prefix) {
 			return
 		}

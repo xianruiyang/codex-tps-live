@@ -155,6 +155,7 @@ type liveMonitor struct {
 	trendSince time.Time
 	trendViews map[string]liveTrendRequest
 	quota      *liveQuotaHistory
+	names      liveSessionNames
 }
 
 func newLiveMonitor(home string, days int, archived bool, interval time.Duration) *liveMonitor {
@@ -228,6 +229,7 @@ func (m *liveMonitor) poll() {
 	m.mu.Lock()
 	now := time.Now()
 	m.errors = []string{}
+	m.refreshSessionNames()
 	m.updateTrendScope(now)
 	if m.discovered.IsZero() || now.Sub(m.discovered) >= 5*time.Second {
 		m.discover(now)
@@ -382,7 +384,7 @@ func (m *liveMonitor) snapshot(window int, policies ...liveQuotaRules) liveSnaps
 	result := liveSnapshot{Home: m.home, Days: m.days, IntervalMS: m.interval.Milliseconds(), UpdatedAt: m.updated, Errors: m.errors, Sessions: []liveSessionView{}, CreditRules: creditPolicy(rules)}
 	sessions := m.sessions()
 	for _, f := range sessions {
-		result.Sessions = append(result.Sessions, tierSessionView(f, time.Now(), window, sessions, rules))
+		result.Sessions = append(result.Sessions, m.namedSessionView(f, time.Now(), window, sessions, rules))
 	}
 	sort.Slice(result.Sessions, func(i, j int) bool {
 		a, b := result.Sessions[i], result.Sessions[j]
@@ -427,7 +429,7 @@ func (m *liveMonitor) detail(id string, offset, limit, window int, policies ...l
 	f.requestWindow(window)
 	start := windowStart(s, window)
 	rules := creditRules(policies)
-	out := liveDetail{Session: tierSessionView(f, time.Now(), window, sessions, rules), Turns: []liveTurnView{}, Total: len(s.Turns) - start, Offset: offset, CreditRules: creditPolicy(rules)}
+	out := liveDetail{Session: m.namedSessionView(f, time.Now(), window, sessions, rules), Turns: []liveTurnView{}, Total: len(s.Turns) - start, Offset: offset, CreditRules: creditPolicy(rules)}
 	for i := len(s.Turns) - 1 - offset; i >= start && len(out.Turns) < limit; i-- {
 		copy := *s.Turns[i]
 		if copy.ServiceTierSource == "" {
