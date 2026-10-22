@@ -26,10 +26,10 @@ jobs:
             Windows 10/11 x64 本地 Codex token 与 TPS 实时监控工具。
 
             本次更新：
-            - 额度校准使用截至所选结束时间的完整历史，切换图表时间范围不再改变校准基线；继续排除首个不完整百分点区间。
-            - 修正速度趋势的默认纵轴、自适应和恢复全图：默认按可见趋势曲线确定比例，原始极值可通过“查看全部散点”单独查看。
-            - 滚轮缩放以鼠标位置为中心；Shift 只缩放纵轴，Ctrl 只缩放横轴。自适应留白不再受之前的缩放影响。
-            - 切换原始散点保留缩放，切换图例保留手动时间范围并重算纵轴；完善空时间段与全部曲线隐藏时的提示和操作状态。
+            - 额度趋势补上 12 小时快捷范围，自定义起止时间直接显示，区分快捷滚动范围与自定义固定范围。
+            - 修复稀疏上报中孤立旧额度快照导致误分段、丢失校准依据的问题；持续回退、重置和超过 6 小时的空窗仍会重新分段，首个不完整区间仍不参与校准。
+            - 趋势滤波时间窗口在按 Enter 或离开输入框后才应用，输入过程中不逐字重算，数值未变时跳过重算。
+            - 对话标题优先读取本地 session_index.jsonl 的最新名称，修复分支对话误显示 Referenced chats 注入说明的问题；列表与详情统一，缺少索引名称时使用有效用户文本预览。
 
             1. 下载下方 Assets 中的 `codex-tps-live-windows-amd64.zip`。
             2. 完整解压到任意目录。
@@ -43,10 +43,10 @@ jobs:
             Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. English instructions are included in `Usage.en.md`.
 
             Changes in this release:
-            - Quota calibration uses all history up to the selected end time, so changing the displayed time range no longer shifts the calibration baseline. The initial incomplete percentage interval remains excluded.
-            - Corrects default trend scaling, fit, and reset. Raw outliers have a separate “Show all raw points” action.
-            - Anchors wheel zoom to the pointer, with Shift for Y only and Ctrl for X only. Fit padding no longer depends on previous zoom.
-            - Preserves zoom when toggling raw points and the manual time range when toggling a series, while refitting Y. Improves empty-range and all-hidden states.
+            - Adds a 12-hour quota preset and always-visible custom start/end fields, distinguishing rolling presets from fixed custom ranges.
+            - Preserves quota calibration across isolated stale snapshots followed by sparse recovery reports. Sustained rollbacks, resets, and reporting gaps over six hours still start new segments; the initial incomplete interval remains excluded.
+            - Applies trend smoothing window edits on Enter or blur rather than every keystroke, and skips unchanged values.
+            - Uses the latest local session_index.jsonl name for conversation titles, fixing forked chats labeled with injected Referenced chats notices. Lists and details share this priority, with valid user-text previews as fallback.
           files: |
             codex-tps-live-windows-amd64.zip
             SHA256SUMS
