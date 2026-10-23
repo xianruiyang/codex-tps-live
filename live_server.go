@@ -34,7 +34,7 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	port := flags.Int("port", 8765, "loopback port; 0 chooses an available port")
 	days := flags.Int("days", 7, "discover logs modified in the last N days; 0 includes all history")
 	interval := flags.Duration("interval", 500*time.Millisecond, "local tail polling interval (minimum 200ms)")
-	archived := flags.Bool("include-archived", false, "also discover archived_sessions")
+	archived := flags.Bool("include-archived", false, "show archived conversations by default (archived logs are always collected)")
 	dataDir := flags.String("data-dir", "", "local quota history directory (default: user local application data/CodexTPSLive)")
 	quotaProfile := flags.String("quota-profile", "default", "local quota history namespace; does not identify a signed-in account")
 	open := flags.Bool("open", false, "open the local dashboard in the default browser")

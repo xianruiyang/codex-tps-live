@@ -17,6 +17,7 @@ const liveMaxLine = 16 * 1024 * 1024
 
 type liveFile struct {
 	path         string
+	archived     bool
 	offset, size int64
 	line         int
 	pending      []byte
@@ -47,6 +48,14 @@ func liveID(path string) string {
 func newLiveFile(path string) *liveFile {
 	return &liveFile{path: path, session: newLiveSession(liveID(path)), wantedTurns: 10}
 }
+
+func (f *liveFile) setLocation(path string, archived bool) {
+	f.path, f.archived = path, archived
+	if f.backfill != nil {
+		f.backfill.setLocation(path, archived)
+	}
+}
+
 func (f *liveFile) read() error {
 	file, err := os.Open(f.path)
 	if err != nil {
@@ -67,8 +76,9 @@ func (f *liveFile) read() error {
 		reset = true
 	}
 	if reset {
-		wanted, since := f.wantedTurns, f.wantedSince
+		wanted, since, archived := f.wantedTurns, f.wantedSince, f.archived
 		*f = *newLiveFile(f.path)
+		f.archived = archived
 		f.wantedTurns = wanted
 		f.wantedSince = since
 		f.session.warn("日志已重建或截断，统计已从文件重新建立")
@@ -143,30 +153,37 @@ func (f *liveFile) read() error {
 }
 
 type liveMonitor struct {
-	mu         sync.RWMutex
-	home       string
-	days       int
-	archived   bool
-	interval   time.Duration
-	files      map[string]*liveFile
-	errors     []string
-	updated    time.Time
-	discovered time.Time
-	trendSince time.Time
-	trendViews map[string]liveTrendRequest
-	quota      *liveQuotaHistory
-	names      liveSessionNames
+	mu           sync.RWMutex
+	home         string
+	days         int
+	showArchived bool
+	interval     time.Duration
+	files        map[string]*liveFile
+	errors       []string
+	updated      time.Time
+	discovered   time.Time
+	trendSince   time.Time
+	trendViews   map[string]liveTrendRequest
+	quota        *liveQuotaHistory
+	names        liveSessionNames
 }
 
-func newLiveMonitor(home string, days int, archived bool, interval time.Duration) *liveMonitor {
-	return &liveMonitor{home: home, days: days, archived: archived, interval: interval, files: map[string]*liveFile{}, errors: []string{}}
+func newLiveMonitor(home string, days int, showArchived bool, interval time.Duration) *liveMonitor {
+	return &liveMonitor{home: home, days: days, showArchived: showArchived, interval: interval, files: map[string]*liveFile{}, errors: []string{}}
 }
 func (m *liveMonitor) discover(now time.Time) {
-	roots := []string{"sessions"}
-	if m.archived {
-		roots = append(roots, "archived_sessions")
+	// Collection is independent of the conversation list's display preference.
+	roots := []string{"sessions", "archived_sessions"}
+	type discoveredFile struct {
+		info     os.FileInfo
+		archived bool
 	}
-	seen := map[string]bool{}
+	seen := map[string]discoveredFile{}
+	known := map[string][]*liveFile{}
+	for _, f := range m.files {
+		id := liveID(f.path)
+		known[id] = append(known[id], f)
+	}
 	cutoff := now.AddDate(0, 0, -m.days)
 	if !m.trendSince.IsZero() && m.trendSince.Before(cutoff) {
 		cutoff = m.trendSince
@@ -191,22 +208,38 @@ func (m *liveMonitor) discover(now time.Time) {
 			if err != nil {
 				return nil
 			}
-			if m.days > 0 && info.ModTime().Before(cutoff) && m.files[path] == nil {
+			if m.days > 0 && info.ModTime().Before(cutoff) && len(known[liveID(path)]) == 0 {
 				return nil
 			}
-			seen[path] = true
-			if m.files[path] == nil {
-				m.files[path] = newLiveFile(path)
-				m.files[path].modified = info.ModTime()
-			}
+			seen[path] = discoveredFile{info: info, archived: root == "archived_sessions"}
 			return nil
 		})
 		if err != nil {
 			m.addError(err.Error())
 		}
 	}
+	for path, found := range seen {
+		f := m.files[path]
+		if f == nil {
+			// A rename keeps the same file identity. Retain tail checkpoints and
+			// in-flight backfill instead of briefly removing the conversation.
+			for _, old := range known[liveID(path)] {
+				if _, exists := seen[old.path]; !exists && old.info != nil && os.SameFile(old.info, found.info) {
+					f = old
+					delete(m.files, old.path)
+					break
+				}
+			}
+			if f == nil {
+				f = newLiveFile(path)
+				f.modified = found.info.ModTime()
+			}
+			m.files[path] = f
+		}
+		f.setLocation(path, found.archived)
+	}
 	for path := range m.files {
-		if !seen[path] {
+		if _, exists := seen[path]; !exists {
 			delete(m.files, path)
 		}
 	}
@@ -267,7 +300,7 @@ func (m *liveMonitor) sessions() map[string]*liveFile {
 			continue
 		}
 		old := byID[f.session.ID]
-		if old == nil || f.modified.After(old.modified) || (f.modified.Equal(old.modified) && f.path < old.path) {
+		if old == nil || f.modified.After(old.modified) || (f.modified.Equal(old.modified) && ((old.archived && !f.archived) || (f.archived == old.archived && f.path < old.path))) {
 			byID[f.session.ID] = f
 		}
 	}
@@ -276,6 +309,7 @@ func (m *liveMonitor) sessions() map[string]*liveFile {
 
 type liveSessionView struct {
 	ID                string          `json:"id"`
+	Archived          bool            `json:"archived"`
 	Title             string          `json:"title"`
 	CWD               string          `json:"cwd"`
 	Model             string          `json:"model"`
@@ -331,6 +365,7 @@ func sessionView(f *liveFile, now time.Time, window int) liveSessionView {
 	}
 	v := liveSessionView{ID: s.ID, Title: s.Title, CWD: s.CWD, Model: s.model, Effort: s.effort, ParentID: s.ParentID, Status: status, UpdatedAt: s.UpdatedAt, Turns: len(s.Turns) - start, TotalTurns: len(s.Turns), Window: window, Metrics: metrics, TPS: metrics.rates(), Warnings: s.Warnings, Indexing: f.offset < f.size, PendingLine: len(f.pending) > 0 || f.dropping, LatestResponse: latest}
 	v.CreatedAt, v.LastResponseAt = s.CreatedAt, s.LastResponseAt
+	v.Archived = f.archived
 	v.TotalKnown = !f.hasEarlier
 	v.AgentNickname, v.AgentRole = s.AgentNickname, s.AgentRole
 	v.AgentPath = s.AgentPath
@@ -365,13 +400,14 @@ func sessionView(f *liveFile, now time.Time, window int) liveSessionView {
 }
 
 type liveSnapshot struct {
-	Home        string            `json:"codex_home"`
-	Days        int               `json:"days"`
-	IntervalMS  int64             `json:"interval_ms"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	Errors      []string          `json:"errors"`
-	Sessions    []liveSessionView `json:"sessions"`
-	CreditRules liveCreditPolicy  `json:"credit_rules"`
+	Home                  string            `json:"codex_home"`
+	Days                  int               `json:"days"`
+	IntervalMS            int64             `json:"interval_ms"`
+	UpdatedAt             time.Time         `json:"updated_at"`
+	Errors                []string          `json:"errors"`
+	Sessions              []liveSessionView `json:"sessions"`
+	CreditRules           liveCreditPolicy  `json:"credit_rules"`
+	ShowArchivedByDefault bool              `json:"show_archived_by_default"`
 }
 
 func (m *liveMonitor) snapshot(window int, policies ...liveQuotaRules) liveSnapshot {
@@ -381,7 +417,7 @@ func (m *liveMonitor) snapshot(window int, policies ...liveQuotaRules) liveSnaps
 		f.requestWindow(window)
 	}
 	rules := creditRules(policies)
-	result := liveSnapshot{Home: m.home, Days: m.days, IntervalMS: m.interval.Milliseconds(), UpdatedAt: m.updated, Errors: m.errors, Sessions: []liveSessionView{}, CreditRules: creditPolicy(rules)}
+	result := liveSnapshot{Home: m.home, Days: m.days, IntervalMS: m.interval.Milliseconds(), UpdatedAt: m.updated, Errors: m.errors, Sessions: []liveSessionView{}, CreditRules: creditPolicy(rules), ShowArchivedByDefault: m.showArchived}
 	sessions := m.sessions()
 	for _, f := range sessions {
 		result.Sessions = append(result.Sessions, m.namedSessionView(f, time.Now(), window, sessions, rules))

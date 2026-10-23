@@ -101,7 +101,7 @@ func (m *liveMonitor) trends(from, to time.Time, view string) liveTrendData {
 	}
 	m.trendViews[view] = liveTrendRequest{from: from, seen: time.Now()}
 	m.updateTrendScope(time.Now())
-	data := liveTrendData{From: from, To: to, UpdatedAt: m.updated, Files: len(m.files), Archived: m.archived, Errors: append([]string{}, m.errors...), Series: []liveTrendSeries{}}
+	data := liveTrendData{From: from, To: to, UpdatedAt: m.updated, Files: len(m.files), Archived: true, Errors: append([]string{}, m.errors...), Series: []liveTrendSeries{}}
 	if m.discovered.IsZero() {
 		data.PendingFiles++
 	}

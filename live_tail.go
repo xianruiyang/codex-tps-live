@@ -241,6 +241,7 @@ func (f *liveFile) readLatest() error {
 	needTurns := f.hasEarlier && f.wantedTurns > f.loadedWindow && len(f.session.Turns) < f.wantedTurns
 	if f.backfill == nil && (needTurns || f.rangeMissing(f.wantedSince)) {
 		f.backfill = newLiveFile(f.path)
+		f.backfill.archived = f.archived
 		f.backfill.wantedTurns = f.wantedTurns
 		f.backfill.wantedSince = f.wantedSince
 	}
