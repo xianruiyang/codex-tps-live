@@ -12,7 +12,7 @@ Based on [adenta/codex-tps](https://github.com/adenta/codex-tps) v0.2.0 (`be5496
 
 The package contains six files: `codex-tps-live.exe`, `启动监控.cmd`, the Chinese guide `使用说明.md`, the English guide `Usage.en.md`, the original English MIT `LICENSE`, and its Chinese translation `LICENSE.zh-CN.md`. Web assets are embedded in the executable. Running it requires no source tree, `web` folder, Go, Node, Python, API key, or internet connection. The package does not include local Codex logs, credentials, or screenshots. The launcher locates the executable relative to itself, independently of drive letters, user names, extraction locations, or the current working directory. It also forwards command-line arguments.
 
-You can also run it from PowerShell:
+You can also [download the standalone EXE](https://github.com/xianruiyang/codex-tps-live/releases/latest/download/codex-tps-live.exe) and run it from PowerShell. The ZIP additionally includes the launcher, bilingual guides, and licenses. The release's `SHA256SUMS` covers both the ZIP and EXE:
 
 ```powershell
 .\codex-tps-live.exe --open
@@ -150,7 +150,7 @@ To update only the portable guides, licenses, and archive, reuse the existing ex
 pwsh -File .\scripts\package-portable.ps1
 ```
 
-Pushing a `v*` tag triggers GitHub Actions on a Windows runner. It calls the same `build-portable.ps1` and publishes the Windows portable ZIP and `SHA256SUMS` to the release. The tag should match the program version in `live_server.go`. GitHub's automatic Source code archives are for development; download `codex-tps-live-windows-amd64.zip` from Release Assets to run the program directly.
+Pushing a `v*` tag triggers GitHub Actions on a Windows runner. It calls the same `build-portable.ps1` and publishes the Windows portable ZIP, standalone EXE, and `SHA256SUMS` covering both downloads. The tag should match the program version in `live_server.go`. GitHub's automatic Source code archives are for development; download `codex-tps-live-windows-amd64.zip` or the standalone `codex-tps-live.exe` from Release Assets to run the program directly.
 
 ## License
 

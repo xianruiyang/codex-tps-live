@@ -12,7 +12,7 @@ Windows 本地 Codex 用量与速度监控工具，以只读方式分析本机�
 
 便携包包含六个文件：`codex-tps-live.exe`、`启动监控.cmd`、中文 `使用说明.md`、英文 `Usage.en.md`、英文 MIT 原文 `LICENSE` 和中文译文 `LICENSE.zh-CN.md`。页面资源内嵌在 exe 中，不需要项目源码、`web` 文件夹、Go、Node、Python、API Key 或联网；不会打包本机 Codex 日志、认证文件或截图。启动器通过自身位置寻找 exe，不依赖盘符、用户名、解压位置或当前工作目录。启动器也支持透传下面的命令行参数。
 
-也可以在 PowerShell 中运行：
+也可[单独下载 EXE](https://github.com/xianruiyang/codex-tps-live/releases/latest/download/codex-tps-live.exe)，在 PowerShell 中运行；ZIP 另附启动器、双语说明和许可证。Release 的 `SHA256SUMS` 同时提供 ZIP 与 EXE 校验值：
 
 ```powershell
 .\codex-tps-live.exe --open
@@ -150,7 +150,7 @@ pwsh -File .\build-portable.ps1
 pwsh -File .\scripts\package-portable.ps1
 ```
 
-推送 `v*` 版本标签后，GitHub Actions 会在 Windows runner 上调用同一个 `build-portable.ps1`，自动发布 Windows 便携 ZIP 和 `SHA256SUMS` 到对应 Release。发布标签与 `live_server.go` 中的程序版本应保持一致。GitHub 自动生成的 Source code 压缩包用于开发；直接运行请下载 Release Assets 中的 `codex-tps-live-windows-amd64.zip`。
+推送 `v*` 版本标签后，GitHub Actions 会在 Windows runner 上调用同一个 `build-portable.ps1`，自动发布 Windows 便携 ZIP、独立 EXE 和包含两者校验值的 `SHA256SUMS` 到对应 Release。发布标签与 `live_server.go` 中的程序版本应保持一致。GitHub 自动生成的 Source code 压缩包用于开发；直接运行请下载 Release Assets 中的 `codex-tps-live-windows-amd64.zip`，或单独的 `codex-tps-live.exe`。
 
 ## 开源协议
 

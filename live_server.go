@@ -23,7 +23,7 @@ import (
 //go:embed web/index.html web/trends.html web/quota.html
 var liveAssets embed.FS
 
-const liveVersion = "0.17.4"
+const liveVersion = "0.17.5"
 
 // RunLive starts a read-only, loopback-only dashboard. It never launches Codex,
 // reads credentials, makes outbound requests, or writes to the Codex home.

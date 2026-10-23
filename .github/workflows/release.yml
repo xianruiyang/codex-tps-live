@@ -16,9 +16,11 @@ jobs:
         shell: pwsh
         run: |
           ./build-portable.ps1
-          $archive = 'codex-tps-live-windows-amd64.zip'
-          $checksum = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          [System.IO.File]::WriteAllText((Join-Path $PWD 'SHA256SUMS'), "$checksum  $archive`n", [System.Text.UTF8Encoding]::new($false))
+          $taskChecksums = foreach ($taskAsset in @('codex-tps-live-windows-amd64.zip', 'dist/codex-tps-live.exe')) {
+            $taskHash = (Get-FileHash -LiteralPath $taskAsset -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$taskHash  $([System.IO.Path]::GetFileName($taskAsset))"
+          }
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'SHA256SUMS'), (($taskChecksums -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
       - uses: softprops/action-gh-release@v2
         with:
           name: Codex TPS Live ${{ github.ref_name }}
@@ -26,10 +28,11 @@ jobs:
             Windows 10/11 x64 本地 Codex token 与 TPS 实时监控工具。
 
             本次更新：
-            - 额度趋势补上 12 小时快捷范围，自定义起止时间直接显示，区分快捷滚动范围与自定义固定范围。
-            - 修复稀疏上报中孤立旧额度快照导致误分段、丢失校准依据的问题；持续回退、重置和超过 6 小时的空窗仍会重新分段，首个不完整区间仍不参与校准。
-            - 趋势滤波时间窗口在按 Enter 或离开输入框后才应用，输入过程中不逐字重算，数值未变时跳过重算。
-            - 对话标题优先读取本地 session_index.jsonl 的最新名称，修复分支对话误显示 Referenced chats 注入说明的问题；列表与详情统一，缺少索引名称时使用有效用户文本预览。
+            - 额度页新增预计耗尽时间，可选参考时长，或直接在额度图上拖动选择时间段；释放鼠标后计算，支持手动输入与 Escape 取消。
+            - 耗尽预测按连续额度快照的实际百分点消耗速度计算，与积分价格和 token 容量估算独立；显示样本范围、数据时间及重置早于耗尽的提示。
+            - 后台始终发现归档日志，对话页新增“显示归档对话”筛选和归档标记；隐藏或归档对话不再移除速度趋势或额度估算样本。首次发现仍遵循 --days，选择更早图表范围会继续补读。
+            - 同一日志移入或移出归档目录时保留增量读取与历史补读进度，同一对话 ID 不重复累计；--include-archived 兼容为默认显示偏好。
+            - 速度图须先左键选中才能缩放，点击框外取消选中并保留比例；未选中时滚轮正常滚动页面，实时刷新保留选择，也支持键盘选择。
 
             1. 下载下方 Assets 中的 `codex-tps-live-windows-amd64.zip`。
             2. 完整解压到任意目录。
@@ -39,14 +42,19 @@ jobs:
             无需安装 Go、Node 或 Python；页面资源全部内嵌，只读本机日志，不代理或修改 Codex 请求。
 
             使用方法与统计口径见压缩包中的 `使用说明.md`。
+            也可单独下载 `codex-tps-live.exe`，运行时加 `--open` 打开浏览器；完整 ZIP 另附启动器、双语说明和许可证。`SHA256SUMS` 提供 ZIP 与 EXE 的校验值。
 
             Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. English instructions are included in `Usage.en.md`.
 
             Changes in this release:
-            - Adds a 12-hour quota preset and always-visible custom start/end fields, distinguishing rolling presets from fixed custom ranges.
-            - Preserves quota calibration across isolated stale snapshots followed by sparse recovery reports. Sustained rollbacks, resets, and reporting gaps over six hours still start new segments; the initial incomplete interval remains excluded.
-            - Applies trend smoothing window edits on Enter or blur rather than every keystroke, and skips unchanged values.
-            - Uses the latest local session_index.jsonl name for conversation titles, fixing forked chats labeled with injected Referenced chats notices. Lists and details share this priority, with valid user-text previews as fallback.
+            - Adds quota exhaustion forecasts from configurable lookback periods or a range dragged directly on the quota chart. Calculations commit on release; manual time entry and Escape cancellation are supported.
+            - Forecasts use actual percentage-point consumption within one continuous quota segment, independently of credit prices and token capacity. Sample bounds, report time, and resets occurring before exhaustion are shown.
+            - Always discovers archived logs, with a separate Show archived conversations filter and archive labels. Hiding or archiving conversations does not remove their speed trends or quota-estimation samples. Initial discovery still follows --days; older chart ranges request further backfill.
+            - Preserves incremental reading and backfill when the same log moves into or out of the archive directory, without adding matching conversation IDs twice. --include-archived now supplies the initial display preference.
+            - Requires chart selection before zooming. Clicking outside deselects without resetting the view; the wheel scrolls the page over unselected charts. Selection survives live refreshes and supports keyboard controls.
+
+            The standalone `codex-tps-live.exe` is also available; run it with `--open` to open the browser. The ZIP additionally includes the launcher, bilingual guides, and licenses. `SHA256SUMS` covers both downloads.
           files: |
             codex-tps-live-windows-amd64.zip
+            dist/codex-tps-live.exe
             SHA256SUMS
