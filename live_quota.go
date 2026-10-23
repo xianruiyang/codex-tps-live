@@ -142,19 +142,20 @@ type liveQuotaChange struct {
 }
 
 type liveQuotaData struct {
-	From         time.Time         `json:"from"`
-	To           time.Time         `json:"to"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	PendingFiles int               `json:"pending_files"`
-	Files        int               `json:"files"`
-	HistoryPath  string            `json:"history_path"`
-	HistoryError string            `json:"history_error"`
-	Series       []liveQuotaSeries `json:"series"`
-	Selected     string            `json:"selected_series"`
-	Latest       *liveQuotaPoint   `json:"latest"`
-	Rules        liveQuotaRules    `json:"rules"`
-	Estimate     liveQuotaEstimate `json:"estimate"`
-	Changes      []liveQuotaChange `json:"changes"`
+	From         time.Time          `json:"from"`
+	To           time.Time          `json:"to"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	PendingFiles int                `json:"pending_files"`
+	Files        int                `json:"files"`
+	HistoryPath  string             `json:"history_path"`
+	HistoryError string             `json:"history_error"`
+	Series       []liveQuotaSeries  `json:"series"`
+	Selected     string             `json:"selected_series"`
+	Latest       *liveQuotaPoint    `json:"latest"`
+	Rules        liveQuotaRules     `json:"rules"`
+	Estimate     liveQuotaEstimate  `json:"estimate"`
+	Changes      []liveQuotaChange  `json:"changes"`
+	Forecast     *liveQuotaForecast `json:"forecast,omitempty"`
 }
 
 func quotaRate(model string) (liveQuotaModelRate, bool) {
@@ -429,6 +430,8 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 	if group := groups[selected]; group != nil && len(group.Points) > 0 {
 		last := group.Points[len(group.Points)-1]
 		data.Latest = &last
+		forecast := forecastQuota(group, r, from, to, data.PendingFiles)
+		data.Forecast = &forecast
 		target := quotaTargetMix(data.Estimate.Target, displayRecords, group.Bucket, data.Rules)
 		estimate, changes := estimateQuota(group, records, data.Rules, target, data.PendingFiles)
 		data.Estimate = estimate
