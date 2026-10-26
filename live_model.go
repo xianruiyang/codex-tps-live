@@ -43,15 +43,18 @@ func (x liveTokens) empty() bool {
 }
 
 type liveMetrics struct {
-	Tokens             liveTokens `json:"tokens"`
-	TimedTokens        liveTokens `json:"timed_tokens"`
-	Seconds            float64    `json:"response_seconds"`
-	Responses          int        `json:"responses"`
-	TimedResponses     int        `json:"timed_responses"`
-	ActualTokens       int64      `json:"actual_tokens"`
-	ActualSeconds      float64    `json:"actual_seconds"`
-	ActualResponses    int        `json:"actual_responses"`
-	EstimatedResponses int        `json:"estimated_responses"`
+	Tokens               liveTokens `json:"tokens"`
+	TimedTokens          liveTokens `json:"timed_tokens"`
+	Seconds              float64    `json:"response_seconds"`
+	Responses            int        `json:"responses"`
+	TimedResponses       int        `json:"timed_responses"`
+	ActualTokens         int64      `json:"actual_tokens"`
+	ActualSeconds        float64    `json:"actual_seconds"`
+	ActualResponses      int        `json:"actual_responses"`
+	EstimatedResponses   int        `json:"estimated_responses"`
+	RangeResponses       int        `json:"range_responses"`
+	GenerationMinSeconds float64    `json:"generation_min_seconds"`
+	GenerationMaxSeconds float64    `json:"generation_max_seconds"`
 }
 
 func (m *liveMetrics) add(r liveResponse) {
@@ -61,6 +64,15 @@ func (m *liveMetrics) add(r liveResponse) {
 		m.TimedTokens.add(r.Tokens)
 		m.Seconds += r.Seconds
 		m.TimedResponses++
+		if r.GenerationMaxSeconds > 0 {
+			m.GenerationMinSeconds += r.GenerationMinSeconds
+			m.GenerationMaxSeconds += r.GenerationMaxSeconds
+		} else {
+			m.GenerationMaxSeconds += r.Seconds
+		}
+		if r.TPS.ActualRange || r.TPS.Actual == nil {
+			m.RangeResponses++
+		}
 	}
 	if r.GenerationSeconds > 0 && r.TPS.Actual != nil {
 		m.ActualTokens += r.Tokens.Output
@@ -82,6 +94,9 @@ func (m *liveMetrics) merge(other liveMetrics) {
 	m.ActualSeconds += other.ActualSeconds
 	m.ActualResponses += other.ActualResponses
 	m.EstimatedResponses += other.EstimatedResponses
+	m.RangeResponses += other.RangeResponses
+	m.GenerationMinSeconds += other.GenerationMinSeconds
+	m.GenerationMaxSeconds += other.GenerationMaxSeconds
 }
 func ratio(n float64, d float64) *float64 {
 	if d <= 0 {
@@ -98,35 +113,44 @@ type liveRates struct {
 	Perceived       *float64 `json:"perceived"`
 	Actual          *float64 `json:"actual"`
 	ActualEstimated bool     `json:"actual_estimated"`
+	ActualMin       *float64 `json:"actual_min"`
+	ActualMax       *float64 `json:"actual_max"`
+	ActualRange     bool     `json:"actual_range"`
 }
 
 func (m liveMetrics) rates() liveRates {
-	return liveRates{Output: ratio(float64(m.TimedTokens.Output), m.Seconds), Visible: ratio(float64(m.TimedTokens.Visible), m.Seconds), Reasoning: ratio(float64(m.TimedTokens.Reasoning), m.Seconds), Perceived: ratio(float64(m.TimedTokens.Output), m.Seconds), Actual: ratio(float64(m.ActualTokens), m.ActualSeconds), ActualEstimated: m.EstimatedResponses > 0}
+	rates := liveRates{Output: ratio(float64(m.TimedTokens.Output), m.Seconds), Visible: ratio(float64(m.TimedTokens.Visible), m.Seconds), Reasoning: ratio(float64(m.TimedTokens.Reasoning), m.Seconds), Perceived: ratio(float64(m.TimedTokens.Output), m.Seconds), Actual: ratio(float64(m.ActualTokens), m.ActualSeconds), ActualEstimated: m.EstimatedResponses > 0 || m.RangeResponses > 0, ActualMin: ratio(float64(m.TimedTokens.Output), m.GenerationMaxSeconds), ActualMax: ratio(float64(m.TimedTokens.Output), m.GenerationMinSeconds), ActualRange: m.RangeResponses > 0}
+	if rates.ActualRange {
+		rates.Actual = nil
+	}
+	return rates
 }
 
 type liveResponse struct {
-	Index             int              `json:"index"`
-	TurnIndex         int              `json:"turn_index"`
-	TurnID            string           `json:"turn_id"`
-	Model             string           `json:"model"`
-	Effort            string           `json:"effort"`
-	ServiceTier       string           `json:"service_tier"`
-	ServiceTierSource string           `json:"service_tier_source,omitempty"`
-	StartedAt         time.Time        `json:"started_at"`
-	CompletedAt       time.Time        `json:"completed_at"`
-	FirstOutputAt     time.Time        `json:"first_output_at"`
-	RecordedAt        time.Time        `json:"recorded_at"`
-	Seconds           float64          `json:"seconds"`
-	Tokens            liveTokens       `json:"tokens"`
-	TPS               liveRates        `json:"tps"`
-	TimingNote        string           `json:"timing_note,omitempty"`
-	Credits           *liveCreditUsage `json:"credits,omitempty"`
-	TTFT              *liveFirstToken  `json:"ttft,omitempty"`
-	GenerationSeconds float64          `json:"generation_seconds"`
-	Transport         string           `json:"transport"`
-	TransportFallback bool             `json:"transport_fallback"`
-	TransportInferred bool             `json:"transport_inferred"`
-	TransportNote     string           `json:"transport_note"`
+	Index                int              `json:"index"`
+	TurnIndex            int              `json:"turn_index"`
+	TurnID               string           `json:"turn_id"`
+	Model                string           `json:"model"`
+	Effort               string           `json:"effort"`
+	ServiceTier          string           `json:"service_tier"`
+	ServiceTierSource    string           `json:"service_tier_source,omitempty"`
+	StartedAt            time.Time        `json:"started_at"`
+	CompletedAt          time.Time        `json:"completed_at"`
+	FirstOutputAt        time.Time        `json:"first_output_at"`
+	RecordedAt           time.Time        `json:"recorded_at"`
+	Seconds              float64          `json:"seconds"`
+	Tokens               liveTokens       `json:"tokens"`
+	TPS                  liveRates        `json:"tps"`
+	TimingNote           string           `json:"timing_note,omitempty"`
+	Credits              *liveCreditUsage `json:"credits,omitempty"`
+	TTFT                 *liveFirstToken  `json:"ttft,omitempty"`
+	GenerationSeconds    float64          `json:"generation_seconds"`
+	GenerationMinSeconds float64          `json:"generation_min_seconds"`
+	GenerationMaxSeconds float64          `json:"generation_max_seconds"`
+	Transport            string           `json:"transport"`
+	TransportFallback    bool             `json:"transport_fallback"`
+	TransportInferred    bool             `json:"transport_inferred"`
+	TransportNote        string           `json:"transport_note"`
 }
 type liveTurn struct {
 	ID                 string         `json:"id"`

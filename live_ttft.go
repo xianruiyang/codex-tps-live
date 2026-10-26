@@ -237,7 +237,11 @@ func timingRange(events []liveTimingEvent, start, end time.Time) []liveTimingEve
 func (m *liveMonitor) enrichTiming(s *liveSession, turn *liveTurn, r *liveResponse) {
 	m.fillTransport(s, turn, r)
 	r.TPS.Perceived = r.TPS.Output
-	if r.Seconds <= 0 || r.StartedAt.IsZero() || r.CompletedAt.IsZero() {
+	if r.Seconds <= 0 {
+		return
+	}
+	r.setActualBounds(0, r.Seconds)
+	if r.StartedAt.IsZero() || r.CompletedAt.IsZero() {
 		return
 	}
 	if r.TTFT != nil && !r.TTFT.Estimated {
@@ -254,7 +258,8 @@ func (m *liveMonitor) enrichTiming(s *liveSession, turn *liveTurn, r *liveRespon
 	}
 	if len(requests) == 0 {
 		if !r.FirstOutputAt.IsZero() && !r.FirstOutputAt.Before(r.StartedAt) {
-			r.TTFT = &liveFirstToken{Seconds: r.FirstOutputAt.Sub(r.StartedAt).Seconds(), Source: "first_output_item", Estimated: true, UpperBound: true, Note: "未记录可归属的 HTTP 压缩日志（例如 WebSocket 路径）；响应开始→首个已落盘输出项，仅为首 Token 等待上界。输出项可能在生成完毕后才写入，不能作为精确 TTFT 或扣除后计算实际 TPS。"}
+			r.TTFT = &liveFirstToken{Seconds: r.FirstOutputAt.Sub(r.StartedAt).Seconds(), Source: "first_output_item", Estimated: true, UpperBound: true, Note: "未记录可归属的 HTTP 压缩日志（例如 WebSocket 路径）；响应开始→首个已落盘输出项，仅为首 Token 等待上界。根据等待的 0–上界计算实际 TPS 范围，不把上界当作单值 TTFT。"}
+			r.applyFirstToken()
 		}
 		return
 	}
@@ -352,7 +357,16 @@ func (m *liveMonitor) fillTransport(s *liveSession, turn *liveTurn, r *liveRespo
 
 func (r *liveResponse) applyFirstToken() {
 	if r.TTFT.UpperBound {
+		r.setActualBounds(max(0, r.Seconds-r.TTFT.Seconds), r.Seconds)
 		return
+	}
+	if r.TTFT.Estimated && !r.FirstOutputAt.IsZero() {
+		upper := r.FirstOutputAt.Sub(r.StartedAt).Seconds()
+		if r.TTFT.Seconds > upper+.001 {
+			r.TTFT = &liveFirstToken{Seconds: upper, Source: "first_output_item", Estimated: true, UpperBound: true, Note: "HTTP 日志间隔超过首个已落盘输出项的等待时间，不能当作逐次 TTFT 单值；改用首输出项上界计算实际 TPS 范围。"}
+			r.setActualBounds(max(0, r.Seconds-upper), r.Seconds)
+			return
+		}
 	}
 	r.GenerationSeconds = r.Seconds - r.TTFT.Seconds
 	if r.GenerationSeconds <= 0 {
@@ -361,6 +375,28 @@ func (r *liveResponse) applyFirstToken() {
 	}
 	r.TPS.Actual = ratio(float64(r.Tokens.Output), r.GenerationSeconds)
 	r.TPS.ActualEstimated = r.TTFT.Estimated
+	r.TPS.ActualRange = false
+	r.GenerationMinSeconds, r.GenerationMaxSeconds = r.GenerationSeconds, r.GenerationSeconds
+	if r.TTFT.Estimated {
+		r.GenerationMinSeconds = 0
+		if !r.FirstOutputAt.IsZero() {
+			r.GenerationMinSeconds = max(0, r.Seconds-max(r.TTFT.Seconds, r.FirstOutputAt.Sub(r.StartedAt).Seconds()))
+		}
+	}
+	r.TPS.ActualMin = ratio(float64(r.Tokens.Output), r.GenerationMaxSeconds)
+	r.TPS.ActualMax = ratio(float64(r.Tokens.Output), r.GenerationMinSeconds)
+	if r.TTFT.Source == "request_preparation" {
+		r.TPS.Actual, r.TPS.ActualRange = nil, true
+		r.GenerationSeconds = 0
+	}
+}
+
+func (r *liveResponse) setActualBounds(minimum, maximum float64) {
+	r.GenerationMinSeconds, r.GenerationMaxSeconds = max(0, minimum), maximum
+	r.GenerationSeconds = 0
+	r.TPS.Actual, r.TPS.ActualRange, r.TPS.ActualEstimated = nil, true, true
+	r.TPS.ActualMin = ratio(float64(r.Tokens.Output), maximum)
+	r.TPS.ActualMax = ratio(float64(r.Tokens.Output), minimum)
 }
 
 func (m *liveMonitor) timedTurn(s *liveSession, turn *liveTurn) liveMetrics {

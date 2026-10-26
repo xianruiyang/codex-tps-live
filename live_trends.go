@@ -33,27 +33,32 @@ func (m *liveMonitor) updateTrendScope(now time.Time) {
 }
 
 type liveTrendPoint struct {
-	At                int64           `json:"at"`
-	OutputTPS         float64         `json:"output_tps"`
-	VisibleTPS        float64         `json:"visible_tps"`
-	PerceivedTPS      float64         `json:"perceived_tps"`
-	ActualTPS         *float64        `json:"actual_tps"`
-	ActualEstimated   bool            `json:"actual_estimated"`
-	GenerationSeconds float64         `json:"generation_seconds"`
-	TTFT              *liveFirstToken `json:"ttft,omitempty"`
-	Output            int64           `json:"output"`
-	Reasoning         int64           `json:"reasoning"`
-	Seconds           float64         `json:"seconds"`
-	SessionID         string          `json:"session_id"`
-	Turn              int             `json:"turn"`
-	Response          int             `json:"response"`
-	Agent             string          `json:"agent"`
-	Child             bool            `json:"child"`
-	Inherited         bool            `json:"inherited"`
-	Transport         string          `json:"transport"`
-	TransportFallback bool            `json:"transport_fallback"`
-	TransportInferred bool            `json:"transport_inferred"`
-	TransportNote     string          `json:"transport_note"`
+	At                   int64           `json:"at"`
+	OutputTPS            float64         `json:"output_tps"`
+	VisibleTPS           float64         `json:"visible_tps"`
+	PerceivedTPS         float64         `json:"perceived_tps"`
+	ActualTPS            *float64        `json:"actual_tps"`
+	ActualEstimated      bool            `json:"actual_estimated"`
+	ActualMin            *float64        `json:"actual_tps_min"`
+	ActualMax            *float64        `json:"actual_tps_max"`
+	ActualRange          bool            `json:"actual_range"`
+	GenerationSeconds    float64         `json:"generation_seconds"`
+	GenerationMinSeconds float64         `json:"generation_min_seconds"`
+	GenerationMaxSeconds float64         `json:"generation_max_seconds"`
+	TTFT                 *liveFirstToken `json:"ttft,omitempty"`
+	Output               int64           `json:"output"`
+	Reasoning            int64           `json:"reasoning"`
+	Seconds              float64         `json:"seconds"`
+	SessionID            string          `json:"session_id"`
+	Turn                 int             `json:"turn"`
+	Response             int             `json:"response"`
+	Agent                string          `json:"agent"`
+	Child                bool            `json:"child"`
+	Inherited            bool            `json:"inherited"`
+	Transport            string          `json:"transport"`
+	TransportFallback    bool            `json:"transport_fallback"`
+	TransportInferred    bool            `json:"transport_inferred"`
+	TransportNote        string          `json:"transport_note"`
 }
 
 type liveTrendSeries struct {
@@ -162,7 +167,7 @@ func (m *liveMonitor) trends(from, to time.Time, view string) liveTrendData {
 						agent = "子代理"
 					}
 				}
-				group.Points = append(group.Points, liveTrendPoint{At: r.RecordedAt.UnixMilli(), OutputTPS: *r.TPS.Output, VisibleTPS: *r.TPS.Visible, PerceivedTPS: *r.TPS.Perceived, ActualTPS: r.TPS.Actual, ActualEstimated: r.TPS.ActualEstimated, GenerationSeconds: r.GenerationSeconds, TTFT: r.TTFT, Output: r.Tokens.Output, Reasoning: r.Tokens.Reasoning, Seconds: r.Seconds, SessionID: s.ID, Turn: turn.Number, Response: r.TurnIndex, Agent: agent, Child: s.ParentID != "", Inherited: r.ServiceTierSource == "inherited", Transport: r.Transport, TransportFallback: r.TransportFallback, TransportInferred: r.TransportInferred, TransportNote: r.TransportNote})
+				group.Points = append(group.Points, liveTrendPoint{At: r.RecordedAt.UnixMilli(), OutputTPS: *r.TPS.Output, VisibleTPS: *r.TPS.Visible, PerceivedTPS: *r.TPS.Perceived, ActualTPS: r.TPS.Actual, ActualEstimated: r.TPS.ActualEstimated, ActualMin: r.TPS.ActualMin, ActualMax: r.TPS.ActualMax, ActualRange: r.TPS.ActualRange, GenerationSeconds: r.GenerationSeconds, GenerationMinSeconds: r.GenerationMinSeconds, GenerationMaxSeconds: r.GenerationMaxSeconds, TTFT: r.TTFT, Output: r.Tokens.Output, Reasoning: r.Tokens.Reasoning, Seconds: r.Seconds, SessionID: s.ID, Turn: turn.Number, Response: r.TurnIndex, Agent: agent, Child: s.ParentID != "", Inherited: r.ServiceTierSource == "inherited", Transport: r.Transport, TransportFallback: r.TransportFallback, TransportInferred: r.TransportInferred, TransportNote: r.TransportNote})
 			}
 		}
 		if inRange {
