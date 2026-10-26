@@ -9,8 +9,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func captureProcessAlive(pid int) bool {
-	if pid <= 0 {
+func captureProcessAlive(pid int, created int64) bool {
+	return captureProcessNamedAlive(pid, "codex-tps-capture.exe", created)
+}
+
+func captureBackendAlive(pid int, created int64) bool {
+	return captureProcessNamedAlive(pid, "codex.exe", created)
+}
+
+func captureProcessNamedAlive(pid int, name string, created int64) bool {
+	if pid <= 0 || created <= 0 {
 		return false
 	}
 	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
@@ -27,5 +35,9 @@ func captureProcessAlive(pid int) bool {
 	if windows.QueryFullProcessImageName(h, 0, &buffer[0], &size) != nil {
 		return false
 	}
-	return strings.EqualFold(filepath.Base(windows.UTF16ToString(buffer[:size])), "codex-tps-capture.exe")
+	if !strings.EqualFold(filepath.Base(windows.UTF16ToString(buffer[:size])), name) {
+		return false
+	}
+	var creation, exit, kernelTime, userTime windows.Filetime
+	return windows.GetProcessTimes(h, &creation, &exit, &kernelTime, &userTime) == nil && creation.Nanoseconds() == created
 }

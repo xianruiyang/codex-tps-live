@@ -28,6 +28,12 @@ func main() {
 			err = disableCapture()
 		case "--capture-status":
 			err = captureStatus()
+		case "--capture-discover":
+			var cfg captureConfig
+			cfg, err = discoverInstalledCapture(false)
+			if err == nil {
+				fmt.Printf("只读安装发现\n桌面程序：%s\n原版 CLI：%s\n", cfg.CodexApp, cfg.CodexCLI)
+			}
 		default:
 			os.Exit(runOriginal())
 		}
@@ -57,7 +63,12 @@ func runOriginal() int {
 		fmt.Fprintln(os.Stderr, "Codex timing capture: 原版 CLI 路径不能指向采集器自身")
 		return 1
 	}
-	cmd := exec.Command(cfg.CodexCLI, os.Args[1:]...)
+	args := os.Args[1:]
+	if cfg.Enabled && isAppServer(args) {
+		// Invocation-only: never rewrite the user's durable feature settings.
+		args = append([]string{"--enable", "runtime_metrics"}, args...)
+	}
+	cmd := exec.Command(cfg.CodexCLI, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
 	var tap *stderrTap
@@ -70,6 +81,9 @@ func runOriginal() int {
 	// A job closes if the desktop terminates this wrapper, avoiding an orphan
 	// CLI process. Capture failures never turn this into a prerequisite for Codex.
 	job := newChildJob()
+	if job == 0 && tap != nil {
+		tap.warning.Store("cleanup_job_unavailable")
+	}
 	if job != 0 {
 		defer windows.CloseHandle(job)
 	}
@@ -80,8 +94,12 @@ func runOriginal() int {
 	if job != 0 {
 		process, openErr := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
 		if openErr == nil {
-			_ = windows.AssignProcessToJobObject(job, process)
+			if assignErr := windows.AssignProcessToJobObject(job, process); assignErr != nil && tap != nil {
+				tap.warning.Store("cleanup_job_unbound")
+			}
 			windows.CloseHandle(process)
+		} else if tap != nil {
+			tap.warning.Store("cleanup_job_unbound")
 		}
 	}
 	if tap != nil {
@@ -89,7 +107,7 @@ func runOriginal() int {
 	}
 	err = cmd.Wait()
 	if tap != nil {
-		tap.finish(100 * time.Millisecond)
+		tap.finish(2 * time.Second)
 	}
 	if err == nil {
 		return 0

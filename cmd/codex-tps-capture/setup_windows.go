@@ -12,12 +12,15 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 const captureTarget = "codex_api::responses_websocket_timing"
+
+var errCaptureNotRunning = errors.New("未检测到正在运行的 Codex")
 
 type captureConfig struct {
 	CodexCLI       string `json:"codex_cli"`
@@ -96,6 +99,7 @@ func discoverCapture() (captureConfig, bool, error) {
 	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
 	processes := map[uint32]captureProcess{}
 	apps := map[uint32]string{}
+	unresolvedApp := false
 	for err = windows.Process32First(handle, &entry); err == nil; err = windows.Process32Next(handle, &entry) {
 		name := strings.ToLower(windows.UTF16ToString(entry.ExeFile[:]))
 		process := captureProcess{pid: entry.ProcessID, parent: entry.ParentProcessID}
@@ -111,6 +115,9 @@ func discoverCapture() (captureConfig, bool, error) {
 			}
 			if name == "chatgpt.exe" && strings.Contains(strings.ToLower(process.path), "openai.codex_") {
 				apps[process.pid] = process.path
+			}
+			if name == "chatgpt.exe" && process.path == "" {
+				unresolvedApp = true
 			}
 		}
 		processes[process.pid] = process
@@ -138,7 +145,10 @@ func discoverCapture() (captureConfig, bool, error) {
 		}
 	}
 	if len(pairs) == 0 {
-		return cfg, len(apps) > 0, errors.New("请先正常打开 Windows Codex，再执行一次计时采集准备")
+		if len(apps) > 0 || unresolvedApp {
+			return cfg, true, errors.New("桌面进程正在运行，但未能确认其后端；未接管或修改当前进程")
+		}
+		return cfg, false, errCaptureNotRunning
 	}
 	sort.Slice(pairs, func(i, j int) bool { return pairs[i].depth < pairs[j].depth })
 	first := pairs[0]
@@ -160,12 +170,8 @@ func discoverCapture() (captureConfig, bool, error) {
 	return cfg, true, err
 }
 
-func featureCommand(cfg captureConfig, action string) *exec.Cmd {
-	args := []string{"features", action}
-	if action != "list" {
-		args = append(args, "runtime_metrics")
-	}
-	cmd := exec.Command(cfg.CodexCLI, args...)
+func featureCommand(cfg captureConfig) *exec.Cmd {
+	cmd := exec.Command(cfg.CodexCLI, "features", "list")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmd.Dir = cfg.CodexHome
 	for _, item := range os.Environ() {
@@ -179,7 +185,7 @@ func featureCommand(cfg captureConfig, action string) *exec.Cmd {
 }
 
 func readRuntimeFeature(cfg captureConfig) (*bool, error) {
-	output, err := featureCommand(cfg, "list").Output()
+	output, err := featureCommand(cfg).Output()
 	if err != nil {
 		return nil, fmt.Errorf("原版 Codex 无法读取 feature 状态，未修改配置: %w", err)
 	}
@@ -196,72 +202,62 @@ func readRuntimeFeature(cfg captureConfig) (*bool, error) {
 	return nil, errors.New("当前 Codex 没有 runtime_metrics 功能，未修改配置")
 }
 
-func writeRuntimeFeature(cfg captureConfig, enabled bool) error {
-	action := "disable"
-	if enabled {
-		action = "enable"
+func savePreparedCapture(cfg captureConfig) error {
+	old, err := loadCaptureConfig()
+	if err == nil && old.PreviousSaved && strings.EqualFold(old.CodexHome, cfg.CodexHome) {
+		// Retain only the rollback responsibility inherited from older builds.
+		cfg.PreviousSaved, cfg.PreviousMetric = true, old.PreviousMetric
 	}
-	cmd := featureCommand(cfg, action)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
+	cfg.Enabled = true
+	return saveCaptureConfig(cfg)
 }
 
 func prepareCapture() error {
-	cfg, _, err := discoverCapture()
+	cfg, running, err := discoverCapture()
+	if !running && errors.Is(err, errCaptureNotRunning) {
+		cfg, err = discoverInstalledCapture(true)
+	}
 	if err != nil {
 		return err
 	}
-	old, oldErr := loadCaptureConfig()
-	if oldErr == nil && old.Enabled && old.PreviousSaved && strings.EqualFold(old.CodexHome, cfg.CodexHome) {
-		cfg.PreviousSaved, cfg.PreviousMetric = true, old.PreviousMetric
-	} else {
-		previous, readErr := readRuntimeFeature(cfg)
-		if readErr != nil {
-			return readErr
-		}
-		cfg.PreviousSaved, cfg.PreviousMetric = true, previous
-	}
-	cfg.Enabled = true
-	if err = saveCaptureConfig(cfg); err != nil {
+	if err = savePreparedCapture(cfg); err != nil {
 		return err
 	}
-	if err = writeRuntimeFeature(cfg, true); err != nil {
-		cfg.Enabled = false
-		_ = saveCaptureConfig(cfg)
-		return err
-	}
-	fmt.Println("已准备：只启用 features.runtime_metrics，未修改认证、模型、API 地址或全局环境。")
-	fmt.Println("当前 Codex 不会被关闭。结束工作后退出 Codex，再用“启动Codex计时采集.cmd”启动。")
-	fmt.Println("撤销入口：codex-tps-capture.exe --capture-disable")
+	fmt.Println("已保存采集器自己的路径信息；未修改 Codex 配置或当前进程。")
+	fmt.Println("此操作不代表采集已经运行。原生功能仅在将来的采集进程中通过 --enable runtime_metrics 启用。")
 	return nil
 }
 
 func launchCapture() error {
-	_, running, _ := discoverCapture()
+	_, running, err := discoverCapture()
 	if running {
-		return prepareCapture()
+		fmt.Println("检测到 Codex 正在运行；本次仅查询状态，不修改设置、不接管或重启现有进程。")
+		return captureStatus()
 	}
-	cfg, err := loadCaptureConfig()
+	if err != nil && !errors.Is(err, errCaptureNotRunning) {
+		return err
+	}
+	cfg, err := discoverInstalledCapture(true)
 	if err != nil {
-		return fmt.Errorf("请在 Codex 正常运行时先执行一次计时准备: %w", err)
+		return err
 	}
-	if !cfg.Enabled {
-		return errors.New("采集已撤销；请先正常打开 Codex，再执行计时准备")
+	// Read-only compatibility check before launching the desktop.
+	if _, err = readRuntimeFeature(cfg); err != nil {
+		return err
 	}
-	for _, path := range []string{cfg.CodexCLI, cfg.CodexApp} {
-		if _, err = os.Stat(path); err != nil {
-			return fmt.Errorf("Codex 可能已更新，请正常打开新版本后重新准备采集: %w", err)
-		}
+	if err = savePreparedCapture(cfg); err != nil {
+		return err
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
+	launchID := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 	cmd := exec.Command(cfg.CodexApp)
 	cmd.Dir = filepath.Dir(cfg.CodexApp)
 	for _, env := range os.Environ() {
 		key, _, _ := strings.Cut(env, "=")
-		if !strings.EqualFold(key, "RUST_LOG") && !strings.EqualFold(key, "CODEX_CLI_PATH") && !strings.EqualFold(key, "CODEX_TPS_ORIGINAL_CLI") {
+		if !strings.EqualFold(key, "RUST_LOG") && !strings.EqualFold(key, "CODEX_CLI_PATH") && !strings.EqualFold(key, "CODEX_TPS_ORIGINAL_CLI") && !strings.EqualFold(key, "CODEX_TPS_CAPTURE_LAUNCH_ID") {
 			cmd.Env = append(cmd.Env, env)
 		}
 	}
@@ -269,12 +265,24 @@ func launchCapture() error {
 	if filter == "" {
 		filter = "warn"
 	}
-	cmd.Env = append(cmd.Env, "RUST_LOG="+filter+","+captureTarget+"=trace", "CODEX_CLI_PATH="+self, "CODEX_TPS_ORIGINAL_CLI="+cfg.CodexCLI)
+	cmd.Env = append(cmd.Env, "RUST_LOG="+filter+","+captureTarget+"=trace", "CODEX_CLI_PATH="+self, "CODEX_TPS_ORIGINAL_CLI="+cfg.CodexCLI, "CODEX_TPS_CAPTURE_LAUNCH_ID="+launchID)
 	if err = cmd.Start(); err != nil {
 		return err
 	}
-	fmt.Println("已启动 Codex 定向计时采集；标准输入/输出直接继承，原版 CLI 处理全部请求。")
-	return cmd.Process.Release()
+	_ = cmd.Process.Release()
+	dir, err := captureDir()
+	if err != nil {
+		return err
+	}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		var state captureRunState
+		if data, readErr := os.ReadFile(filepath.Join(dir, "active.json")); readErr == nil && json.Unmarshal(data, &state) == nil && state.LaunchID == launchID && captureStateAlive(state) {
+			fmt.Println("已确认采集器与原版后端启动；尚未证明收到服务端计时，更不代表已测得客户端逐次 TTFT。")
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return errors.New("已尝试启动桌面程序，但 5 秒内未确认采集后端接通；未结束 Codex，也未修改其持久配置。可稍后查询采集状态")
 }
 
 func disableCapture() error {
@@ -282,40 +290,53 @@ func disableCapture() error {
 	if err != nil {
 		return err
 	}
-	current, err := readRuntimeFeature(cfg)
-	if err != nil {
+	cfg.Enabled = false
+	if err = saveCaptureConfig(cfg); err != nil {
 		return err
 	}
-	if cfg.PreviousSaved && current != nil && *current {
-		previous := cfg.PreviousMetric != nil && *cfg.PreviousMetric
-		if err = writeRuntimeFeature(cfg, previous); err != nil {
-			return err
-		}
+	fmt.Println("已停用将来的可选采集准备；未修改 Codex 配置，未关闭任何进程。")
+	if cfg.PreviousSaved {
+		fmt.Println("旧版曾保存持久功能设置的恢复信息。本次不自动写回，以免覆盖之后的手动设置；信息继续保留。")
 	}
-	cfg.Enabled = false
-	if err = saveCaptureConfig(cfg); err == nil {
-		fmt.Println("已撤销采集设置；下次正常启动 Codex 即恢复普通启动方式，当前工作不受影响。")
-	}
-	return err
+	return nil
 }
 
 func captureStatus() error {
 	cfg, err := loadCaptureConfig()
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	fmt.Printf("采集器本地准备信息：%t（不代表已运行）\n", cfg.Enabled)
+	dir, err := captureDir()
 	if err != nil {
 		return err
 	}
-	dir, _ := captureDir()
-	fmt.Printf("采集准备：%t\n本地目录：%s\n", cfg.Enabled, dir)
-	entries, err := os.ReadDir(dir)
+	var state captureRunState
+	data, err := os.ReadFile(filepath.Join(dir, "active.json"))
+	if os.IsNotExist(err) {
+		fmt.Println("未发现采集后端启动记录；客户端逐次 TTFT 尚未验证支持。")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	count := 0
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "ws-timing-") && strings.HasSuffix(entry.Name(), ".jsonl") {
-			count++
+	if err = json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("采集状态文件无效: %w", err)
+	}
+	alive := captureStateAlive(state)
+	if !alive {
+		var last captureRunState
+		if data, lastErr := os.ReadFile(filepath.Join(dir, "last-run.json")); lastErr == nil && json.Unmarshal(data, &last) == nil && last.PID == state.PID && last.WrapperCreated == state.WrapperCreated && !last.UpdatedAt.Before(state.UpdatedAt) {
+			state = last
 		}
 	}
-	fmt.Printf("计时记录文件：%d；只有实际收到服务端 timing 时才会创建。\n", count)
+	fmt.Printf("采集/后端进程仍存活：%t；计时事件 %d，已保存 %d，解析失败 %d，未知结构 %d，上下文缺失 %d，写盘错误 %d，丢块 %d，超长行 %d。\n", alive, state.Events, state.Records, state.Malformed, state.UnknownSchema, state.IncompleteContext, state.WriteErrors, state.DroppedChunks, state.OversizeLines)
+	if alive && (state.UpdatedAt.IsZero() || time.Since(state.UpdatedAt) > 5*time.Second) {
+		fmt.Println("状态心跳未更新，不能确认日志采集健康。")
+	}
+	if state.LastError != "" || state.Warning != "" || state.FlushIncomplete {
+		fmt.Printf("诊断代码：%s %s；退出写入未完成：%t\n", state.LastError, state.Warning, state.FlushIncomplete)
+	}
+	fmt.Println("服务端记录仅用于诊断，不用于客户端 TTFT 或实际 TPS。")
 	return nil
 }

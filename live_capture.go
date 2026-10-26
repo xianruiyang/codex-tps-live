@@ -14,6 +14,13 @@ import (
 // The optional capture executable writes only this metadata whitelist, never
 // raw stderr, request bodies, user text, or credentials.
 type liveCapturedTiming struct {
+	EventID            string             `json:"event_id"`
+	Shape              string             `json:"shape"`
+	Scope              string             `json:"scope,omitempty"`
+	CriticalScope      string             `json:"critical_scope,omitempty"`
+	Coverage           string             `json:"coverage,omitempty"`
+	Boundary           string             `json:"boundary_type,omitempty"`
+	CriticalPath       map[string]float64 `json:"critical_path,omitempty"`
 	At                 time.Time          `json:"at"`
 	RequestStartMS     int64              `json:"request_start_ms"`
 	ThreadID           string             `json:"thread_id"`
@@ -26,12 +33,41 @@ type liveCapturedTiming struct {
 	Metrics            map[string]float64 `json:"timing_metrics"`
 }
 
+type liveCaptureDiagnostics struct {
+	Events            uint64 `json:"events"`
+	Written           uint64 `json:"written"`
+	Malformed         uint64 `json:"malformed"`
+	UnknownSchema     uint64 `json:"unknown_schema"`
+	IncompleteContext uint64 `json:"incomplete_context"`
+	WriteErrors       uint64 `json:"write_errors"`
+	DroppedChunks     uint64 `json:"dropped_chunks"`
+	OversizeLines     uint64 `json:"oversize_lines"`
+	FlushIncomplete   bool   `json:"flush_incomplete"`
+	LastError         string `json:"last_error,omitempty"`
+	Warning           string `json:"warning,omitempty"`
+}
+
+type liveCaptureRunState struct {
+	WrapperCreated int64 `json:"wrapper_created"`
+	BackendCreated int64 `json:"backend_created"`
+	liveCaptureDiagnostics
+	PID       int       `json:"wrapper_pid"`
+	CodexPID  int       `json:"codex_pid"`
+	Records   uint64    `json:"records"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Phase     string    `json:"phase"`
+}
+
 type liveCaptureStatus struct {
-	Prepared bool   `json:"prepared"`
-	Running  bool   `json:"running"`
-	Records  int    `json:"records"`
-	Pending  bool   `json:"pending"`
-	Message  string `json:"message"`
+	liveCaptureDiagnostics
+	Prepared       bool   `json:"prepared"`
+	Running        bool   `json:"running"`
+	Records        int    `json:"records"`
+	Pending        bool   `json:"pending"`
+	DiagnosticOnly bool   `json:"diagnostic_only"`
+	HeartbeatStale bool   `json:"heartbeat_stale"`
+	HasErrors      bool   `json:"has_errors"`
+	Message        string `json:"message"`
 }
 
 type liveCaptureFile struct {
@@ -60,15 +96,30 @@ func (r *liveCaptureReader) read(now time.Time) ([]liveCapturedTiming, liveCaptu
 		Enabled bool `json:"enabled"`
 	}
 	if data, err := os.ReadFile(filepath.Join(r.dir, "capture.json")); err == nil {
-		_ = json.Unmarshal(data, &config)
+		if err = json.Unmarshal(data, &config); err != nil {
+			return nil, status, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, status, err
 	}
-	status.Prepared = config.Enabled
-	var active struct {
-		PID int `json:"wrapper_pid"`
-	}
+	status.Prepared, status.DiagnosticOnly = config.Enabled, true
+	var active liveCaptureRunState
 	if data, err := os.ReadFile(filepath.Join(r.dir, "active.json")); err == nil {
-		_ = json.Unmarshal(data, &active)
-		status.Running = status.Prepared && captureProcessAlive(active.PID)
+		if err = json.Unmarshal(data, &active); err != nil {
+			return nil, status, err
+		}
+		status.Running = captureProcessAlive(active.PID, active.WrapperCreated) && captureBackendAlive(active.CodexPID, active.BackendCreated)
+		if !status.Running {
+			var last liveCaptureRunState
+			if data, lastErr := os.ReadFile(filepath.Join(r.dir, "last-run.json")); lastErr == nil && json.Unmarshal(data, &last) == nil && last.PID == active.PID && last.WrapperCreated == active.WrapperCreated && !last.UpdatedAt.Before(active.UpdatedAt) {
+				active = last
+			}
+		}
+		status.liveCaptureDiagnostics = active.liveCaptureDiagnostics
+		status.Written = active.Records
+		status.HeartbeatStale = status.Running && (active.UpdatedAt.IsZero() || now.Sub(active.UpdatedAt) > 5*time.Second)
+	} else if !os.IsNotExist(err) {
+		return nil, status, err
 	}
 	entries, err := os.ReadDir(r.dir)
 	if os.IsNotExist(err) {
@@ -160,7 +211,7 @@ func (r *liveCaptureReader) read(now time.Time) ([]liveCapturedTiming, liveCaptu
 			continue
 		}
 		var record liveCapturedTiming
-		if json.Unmarshal(line, &record) == nil && record.RequestStartMS > 0 && record.ThreadID != "" && record.TurnID != "" && len(record.Metrics) > 0 {
+		if json.Unmarshal(line, &record) == nil && (record.EventID != "" || record.Shape != "" || len(record.Metrics) > 0) {
 			result = append(result, record)
 		}
 	}
@@ -194,7 +245,7 @@ func (m *liveMonitor) pollCapture(now time.Time) {
 		m.captureRecords = map[string]liveCapturedTiming{}
 	}
 	for _, record := range records {
-		key := record.ThreadID + "|" + record.TurnID + "|" + time.UnixMilli(record.RequestStartMS).Format(time.RFC3339Nano) + "|" + record.ResponseID + "|" + record.PreviousResponseID
+		key := capturedRecordKey(record)
 		m.captureRecords[key] = record
 	}
 	if len(records) > 0 {
@@ -207,54 +258,34 @@ func (m *liveMonitor) pollCapture(now time.Time) {
 			ordered = ordered[:65536]
 			m.captureRecords = map[string]liveCapturedTiming{}
 			for _, record := range ordered {
-				key := record.ThreadID + "|" + record.TurnID + "|" + time.UnixMilli(record.RequestStartMS).Format(time.RFC3339Nano) + "|" + record.ResponseID + "|" + record.PreviousResponseID
+				key := capturedRecordKey(record)
 				m.captureRecords[key] = record
 			}
 		}
-		m.captureThreads = map[string][]liveCapturedTiming{}
-		for _, record := range ordered {
-			m.captureThreads[record.ThreadID] = append(m.captureThreads[record.ThreadID], record)
-		}
 	}
+
 	status.Records = len(m.captureRecords)
+	status.HasErrors = err != nil || status.Malformed > 0 || status.UnknownSchema > 0 || status.WriteErrors > 0 || status.DroppedChunks > 0 || status.OversizeLines > 0 || status.FlushIncomplete || status.HeartbeatStale || status.Warning != ""
 	switch {
 	case err != nil:
-		status.Message = "WebSocket 计时采集读取暂不可用：" + err.Error()
-	case status.Running && status.Records == 0:
-		status.Message = "WebSocket 计时采集器已接入，尚未收到可关联的服务端 timing。"
+		status.Message = "服务端计时诊断读取失败：" + err.Error()
+	case status.Running && status.HeartbeatStale:
+		status.Message = "采集进程仍存活，但状态心跳未更新；不能确认日志采集健康。"
+	case status.Running && status.Events == 0:
+		status.Message = "采集器与原版后端进程存活，尚未观察到服务端计时事件；客户端逐次 TTFT 未验证支持。"
 	case status.Running:
-		status.Message = "WebSocket 计时采集器已接入；服务端 TTFT 使用独立来源标注，不等同于客户端首内容等待。"
+		status.Message = "已观察到服务端计时诊断事件；这些引擎或累计指标不等同于客户端逐次 TTFT，未用于扣除等待或计算实际 TPS。"
 	case status.Prepared:
-		status.Message = "WebSocket 计时已准备：工作结束后退出 Codex，再用“启动Codex计时采集.cmd”启动生效。"
+		status.Message = "已保存可选诊断启动信息，当前未采集；当前 Codex 可继续工作，无需为此退出。客户端逐次 TTFT 尚未验证支持。"
 	default:
-		status.Message = "WebSocket 定向计时未启用；可选启动器仅旁读计时日志，不代理模型请求。"
+		status.Message = "可选服务端计时诊断未运行；默认只读监控照常工作。"
 	}
 	m.captureStatus = status
 }
 
-func (m *liveMonitor) capturedFirstToken(s *liveSession, turn *liveTurn, r *liveResponse) *liveFirstToken {
-	var candidates []liveCapturedTiming
-	for _, record := range m.captureThreads[s.ID] {
-		if record.Warmup || record.TurnID != turn.ID || record.RequestStartMS < r.StartedAt.UnixMilli() || record.RequestStartMS > r.CompletedAt.UnixMilli() {
-			continue
-		}
-		if record.Model != "" && r.Model != "" && record.Model != r.Model {
-			continue
-		}
-		candidates = append(candidates, record)
+func capturedRecordKey(record liveCapturedTiming) string {
+	if record.EventID != "" {
+		return record.EventID
 	}
-	if len(candidates) != 1 {
-		return nil // do not force retry/parallel timing into one usage checkpoint
-	}
-	record := candidates[0]
-	key := "engine_iapi_ttft_total_ms"
-	wait := record.Metrics[key] / 1000
-	if wait <= 0 {
-		key = "engine_service_ttft_total_ms"
-		wait = record.Metrics[key] / 1000
-	}
-	if wait <= 0 || wait >= r.Seconds {
-		return nil
-	}
-	return &liveFirstToken{Seconds: wait, Source: "websocket_server_timing", Estimated: true, Note: "Codex 原生 WebSocket timing 的 " + key + "；按同对话、同轮次及响应边界内唯一 request_start_ms 关联。服务端引擎计时不包含客户端准备与网络等待，total 字段可能累计请求内部多个 engine call；这是实际 TPS 的估算依据，不是客户端逐 token 实测。"}
+	return record.ThreadID + "|" + record.TurnID + "|" + time.UnixMilli(record.RequestStartMS).Format(time.RFC3339Nano) + "|" + record.At.Format(time.RFC3339Nano) + "|" + record.ResponseID + "|" + record.PreviousResponseID
 }

@@ -19,43 +19,53 @@ type stderrChunk struct {
 	data     []byte
 }
 
-type stderrTap struct {
-	queue   chan stderrChunk
-	done    chan struct{}
-	seq     uint64
-	dropped atomic.Uint64
-	records atomic.Uint64
-	dir     string
-	name    string
+type captureRunState struct {
+	WrapperCreated    int64     `json:"wrapper_created"`
+	BackendCreated    int64     `json:"backend_created"`
+	PID               int       `json:"wrapper_pid"`
+	CodexPID          int       `json:"codex_pid"`
+	LaunchID          string    `json:"launch_id"`
+	StartedAt         time.Time `json:"started_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	Phase             string    `json:"phase"`
+	Events            uint64    `json:"events"`
+	Records           uint64    `json:"records"`
+	Malformed         uint64    `json:"malformed"`
+	UnknownSchema     uint64    `json:"unknown_schema"`
+	IncompleteContext uint64    `json:"incomplete_context"`
+	WriteErrors       uint64    `json:"write_errors"`
+	DroppedChunks     uint64    `json:"dropped_chunks"`
+	OversizeLines     uint64    `json:"oversize_lines"`
+	FlushIncomplete   bool      `json:"flush_incomplete"`
+	LastError         string    `json:"last_error,omitempty"`
+	Warning           string    `json:"warning,omitempty"`
 }
 
-type capturedTiming struct {
-	At                 time.Time          `json:"at"`
-	RequestStartMS     int64              `json:"request_start_ms"`
-	ThreadID           string             `json:"thread_id"`
-	TurnID             string             `json:"turn_id"`
-	Model              string             `json:"model"`
-	ResponseID         string             `json:"response_id,omitempty"`
-	PreviousResponseID string             `json:"previous_response_id,omitempty"`
-	Warmup             bool               `json:"warmup"`
-	ConnectionReused   bool               `json:"connection_reused"`
-	Metrics            map[string]float64 `json:"timing_metrics"`
+type stderrTap struct {
+	identities                                                                      [2]atomic.Int64
+	queue                                                                           chan stderrChunk
+	done                                                                            chan struct{}
+	seq                                                                             uint64
+	dropped, oversize, records, events, malformed, unknown, incomplete, writeErrors atomic.Uint64
+	child, startedAt                                                                atomic.Int64
+	flushIncomplete                                                                 atomic.Bool
+	lastError, warning                                                              atomic.Value
+	dir, name, launchID                                                             string
 }
 
 func newStderrTap(cfg captureConfig) *stderrTap {
 	dir, _ := captureDir()
 	tap := &stderrTap{queue: make(chan stderrChunk, 32), done: make(chan struct{}), dir: dir,
-		name: fmt.Sprintf("ws-timing-%s-%d.jsonl", time.Now().UTC().Format("20060102T150405"), os.Getpid())}
+		name:     fmt.Sprintf("ws-timing-%s-%d.jsonl", time.Now().UTC().Format("20060102T150405"), os.Getpid()),
+		launchID: os.Getenv("CODEX_TPS_CAPTURE_LAUNCH_ID")}
 	go tap.consume()
 	return tap
 }
 
 func (t *stderrTap) Write(p []byte) (int, error) {
-	// Preserve stderr for the desktop first. Capture never waits for its disk
-	// worker: at most 512 KiB is queued, and missing chunks invalidate a line.
+	// Preserve the desktop's stderr first; only the extra copy is nonblocking.
 	_, _ = os.Stderr.Write(p)
-	n := len(p)
-	for rest := p[:n]; len(rest) > 0; {
+	for rest := p; len(rest) > 0; {
 		length := min(len(rest), 16*1024)
 		t.seq++
 		if len(t.queue) == cap(t.queue) {
@@ -70,14 +80,15 @@ func (t *stderrTap) Write(p []byte) (int, error) {
 		}
 		rest = rest[length:]
 	}
-	return n, nil
+	return len(p), nil
 }
 
 func (t *stderrTap) started(pid int) {
-	// A tiny local marker distinguishes "not restarted" from "connected but no
-	// timing received". Failures affect collection only, never the original CLI.
-	data, _ := json.Marshal(map[string]any{"wrapper_pid": os.Getpid(), "codex_pid": pid, "started_at": time.Now().UTC(), "log": t.name})
-	_ = atomicCaptureWrite(filepath.Join(t.dir, "active.json"), append(data, '\n'))
+	t.identities[0].Store(capturePIDIdentity(os.Getpid(), "codex-tps-capture.exe"))
+	t.identities[1].Store(capturePIDIdentity(pid, "codex.exe"))
+	t.startedAt.Store(time.Now().UTC().UnixNano())
+	t.child.Store(int64(pid))
+	t.writeState("backend_started", false)
 }
 
 func (t *stderrTap) finish(timeout time.Duration) {
@@ -85,118 +96,111 @@ func (t *stderrTap) finish(timeout time.Duration) {
 	select {
 	case <-t.done:
 	case <-time.After(timeout):
+		t.flushIncomplete.Store(true)
+		t.writeState("flush_incomplete", true)
 	}
+}
+
+func (t *stderrTap) writeState(phase string, final bool) {
+	if t.child.Load() == 0 {
+		return
+	}
+	state := captureRunState{WrapperCreated: t.identities[0].Load(), BackendCreated: t.identities[1].Load(), PID: os.Getpid(), CodexPID: int(t.child.Load()), LaunchID: t.launchID,
+		StartedAt: time.Unix(0, t.startedAt.Load()).UTC(), UpdatedAt: time.Now().UTC(), Phase: phase,
+		Events: t.events.Load(), Records: t.records.Load(), Malformed: t.malformed.Load(),
+		UnknownSchema: t.unknown.Load(), IncompleteContext: t.incomplete.Load(), WriteErrors: t.writeErrors.Load(),
+		DroppedChunks: t.dropped.Load(), OversizeLines: t.oversize.Load(), FlushIncomplete: t.flushIncomplete.Load()}
+	if v := t.lastError.Load(); v != nil {
+		state.LastError = v.(string)
+	}
+	if v := t.warning.Load(); v != nil {
+		state.Warning = v.(string)
+	}
+	name := "active.json"
+	if final {
+		name = "last-run.json"
+	}
+	data, _ := json.Marshal(state)
+	if atomicCaptureWrite(filepath.Join(t.dir, name), append(data, '\n')) != nil {
+		t.writeErrors.Add(1)
+		t.lastError.Store("status_write_failed")
+	}
+}
+
+func (t *stderrTap) acceptLine(line []byte) {
+	record, kind := parseCapturedTiming(line)
+	if kind == "" {
+		return
+	}
+	event := t.events.Add(1)
+	if kind == "malformed_event" || kind == "malformed_payload" {
+		t.malformed.Add(1)
+		t.lastError.Store(kind)
+		return
+	}
+	if kind == "schema_unrecognized" {
+		t.unknown.Add(1)
+	}
+	if record.RequestStartMS <= 0 || record.ThreadID == "" || record.TurnID == "" {
+		t.incomplete.Add(1)
+	}
+	record.EventID = t.name + ":" + strconv.FormatUint(event, 10)
+	if t.appendRecord(record) != nil {
+		t.writeErrors.Add(1)
+		t.lastError.Store("record_write_failed")
+		return
+	}
+	t.records.Add(1)
 }
 
 func (t *stderrTap) consume() {
 	defer close(t.done)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 	var line []byte
 	var sequence uint64
 	discard := false
-	for chunk := range t.queue {
-		if chunk.sequence != sequence+1 {
-			line, discard = nil, true
-		}
-		sequence = chunk.sequence
-		for _, b := range chunk.data {
-			if b == '\n' {
-				if !discard {
-					if record, ok := parseCapturedTiming(line); ok {
-						if t.appendRecord(record) == nil {
-							t.records.Add(1)
-						}
-					}
-				}
-				line, discard = line[:0], false
-			} else if !discard {
-				if len(line) >= 64*1024 {
-					line, discard = nil, true
+	for {
+		select {
+		case <-ticker.C:
+			t.writeState("backend_started", false)
+		case chunk, ok := <-t.queue:
+			if !ok {
+				if len(line) > 0 || discard {
 					t.dropped.Add(1)
-				} else {
-					line = append(line, b)
+				}
+				t.writeState("stopped", true)
+				return
+			}
+			if chunk.sequence != sequence+1 {
+				line, discard = nil, true
+			}
+			sequence = chunk.sequence
+			for _, b := range chunk.data {
+				if b == '\n' {
+					if !discard {
+						t.acceptLine(line)
+					}
+					line, discard = line[:0], false
+				} else if !discard {
+					if len(line) >= 64*1024 {
+						line, discard = nil, true
+						t.oversize.Add(1)
+					} else {
+						line = append(line, b)
+					}
 				}
 			}
 		}
 	}
-	data, _ := json.Marshal(map[string]any{"wrapper_pid": os.Getpid(), "records": t.records.Load(), "dropped_chunks": t.dropped.Load(), "ended_at": time.Now().UTC()})
-	_ = atomicCaptureWrite(filepath.Join(t.dir, "last-run.json"), append(data, '\n'))
-}
-
-func parseCapturedTiming(line []byte) (capturedTiming, bool) {
-	var record capturedTiming
-	if !bytes.Contains(line, []byte(captureTarget)) {
-		return record, false
-	}
-	var event struct {
-		Timestamp string                     `json:"timestamp"`
-		Target    string                     `json:"target"`
-		Fields    map[string]json.RawMessage `json:"fields"`
-	}
-	if json.Unmarshal(line, &event) != nil || event.Target != captureTarget {
-		return record, false
-	}
-	if event.Fields == nil {
-		_ = json.Unmarshal(line, &event.Fields)
-	}
-	var payload map[string]json.RawMessage
-	raw := event.Fields["payload"]
-	if len(raw) > 0 && raw[0] == '"' {
-		var text string
-		if json.Unmarshal(raw, &text) != nil {
-			return record, false
-		}
-		raw = []byte(text)
-	}
-	if json.Unmarshal(raw, &payload) != nil {
-		return record, false
-	}
-	var metrics map[string]json.RawMessage
-	if json.Unmarshal(payload["timing_metrics"], &metrics) != nil {
-		return record, false
-	}
-	record.Metrics = map[string]float64{}
-	for _, key := range []string{"responses_duration_excl_engine_and_client_tool_time_ms", "engine_service_total_ms", "engine_iapi_ttft_total_ms", "engine_service_ttft_total_ms", "engine_iapi_tbt_across_engine_calls_ms", "engine_service_tbt_across_engine_calls_ms"} {
-		var value float64
-		if json.Unmarshal(metrics[key], &value) == nil && value >= 0 {
-			record.Metrics[key] = value
-		}
-	}
-	if len(record.Metrics) == 0 {
-		return record, false
-	}
-	record.At, _ = time.Parse(time.RFC3339Nano, event.Timestamp)
-	if record.At.IsZero() {
-		record.At = time.Now().UTC()
-	}
-	value := func(m map[string]json.RawMessage, key string, limit int) string {
-		var text string
-		_ = json.Unmarshal(m[key], &text)
-		if len(text) > limit {
-			return ""
-		}
-		return text
-	}
-	start := value(event.Fields, "request_start_ms", 24)
-	if start == "" {
-		start = string(event.Fields["request_start_ms"])
-	}
-	record.RequestStartMS, _ = strconv.ParseInt(start, 10, 64)
-	record.ThreadID = value(event.Fields, "thread_id", 64)
-	record.TurnID = value(event.Fields, "turn_id", 64)
-	record.Model = value(event.Fields, "model", 128)
-	record.PreviousResponseID = value(event.Fields, "previous_response_id", 256)
-	record.ResponseID = value(payload, "response_id", 256)
-	_ = json.Unmarshal(event.Fields["warmup"], &record.Warmup)
-	_ = json.Unmarshal(event.Fields["connection_reused"], &record.ConnectionReused)
-	return record, true
 }
 
 func (t *stderrTap) appendRecord(record capturedTiming) error {
 	path := filepath.Join(t.dir, t.name)
 	if info, err := os.Stat(path); err == nil && info.Size() >= 4*1024*1024 {
-		// Only this process's own file is rotated. There is no cross-process
-		// shared writer and no recursive deletion of any directory.
-		_ = os.Remove(path + ".previous")
+		if err = os.Remove(path + ".previous"); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		if err = os.Rename(path, path+".previous"); err != nil {
 			return err
 		}
@@ -205,11 +209,12 @@ func (t *stderrTap) appendRecord(record capturedTiming) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return json.NewEncoder(f).Encode(record)
+	encodeErr := json.NewEncoder(f).Encode(record)
+	closeErr := f.Close()
+	if encodeErr != nil {
+		return encodeErr
+	}
+	return closeErr
 }
 
 var _ io.Writer = (*stderrTap)(nil)
-
-// Deliberately no raw payload, prompt text, tool output, auth header, or URI is
-// persisted by this collector. Unknown fields are discarded rather than copied.
