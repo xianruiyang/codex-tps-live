@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Codex credit rates, checked 2026-10-15. These are not API USD prices.
+// Codex credit rates, checked 2026-10-27. These are not API USD prices.
 // Included-plan capacity is inferred from observed quota movement, not a claim
 // that OpenAI denominates a subscription's allowance in purchased credits.
 type liveQuotaModelRate struct {
@@ -22,6 +22,7 @@ type liveQuotaModelRate struct {
 var liveQuotaModelRates = []liveQuotaModelRate{
 	{"gpt-6-astra", 250, 25, 1250},
 	{"gpt-6.1-sol", 50, 2.5, 250},
+	{"gpt-6.1-terra", 25, 1.25, 125},
 	{"gpt-6-sol", 50, 5, 250},
 	{"gpt-6-luna", 2.5, .25, 12.5},
 	{"gpt-5.6-sol", 100, 10, 500},
@@ -196,7 +197,7 @@ func quotaCost(u liveQuotaUsage, rules liveQuotaRules) (cost float64, priced, lo
 }
 
 func quotaRules(r *http.Request) liveQuotaRules {
-	rules := liveQuotaRules{AsOf: "2026-10-15", Basis: "included", Fast: 2.5, Ultra: 8, Context: "standard", Models: liveQuotaModelRates,
+	rules := liveQuotaRules{AsOf: "2026-10-27", Basis: "included", Fast: 2.5, Ultra: 8, Context: "standard", Models: liveQuotaModelRates,
 		ContextNote: "完整上下文输入逐次计入，缓存输入按独立积分价；Codex 未明确公布长上下文额外倍率。当前按标准积分表校准等效容量。",
 		Sources: []map[string]string{
 			{"title": "Codex 积分表与额度说明", "url": "https://learn.chatgpt.com/docs/pricing"},
@@ -306,19 +307,21 @@ func quotaWindowChanged(a, b liveQuotaPoint) bool {
 
 func quotaShortRollback(points []liveQuotaPoint, index int, accepted liveQuotaPoint) bool {
 	current := points[index]
-	if current.UsedPercent >= accepted.UsedPercent || current.At.Sub(accepted.At) > 2*time.Minute || quotaWindowChanged(accepted, current) {
+	if current.UsedPercent >= accepted.UsedPercent || quotaWindowChanged(accepted, current) {
 		return false
 	}
 	// Concurrent sessions may report older snapshots more than one point behind.
-	// Sparse reporting can delay recovery beyond two minutes. Require observed
-	// same-window recovery within the normal continuity limit, with no low
-	// reports persisting beyond the short rollback burst.
+	// A quiet period before the rollback says nothing about how long it lasts.
+	// Accept a promptly corrected report even when the last good report is older.
+	// Keep sparse recovery for bursts starting near the accepted report, but do
+	// not merge sustained lower usage or cross a quota window/continuity boundary.
+	nearAccepted := current.At.Sub(accepted.At) <= 2*time.Minute
 	for _, next := range points[index+1:] {
 		if next.At.Sub(accepted.At) > 6*time.Hour || quotaWindowChanged(accepted, next) {
 			break
 		}
 		if next.UsedPercent >= accepted.UsedPercent {
-			return true
+			return nearAccepted || next.At.Sub(current.At) <= 2*time.Minute
 		}
 		if next.At.Sub(current.At) > 2*time.Minute {
 			return false

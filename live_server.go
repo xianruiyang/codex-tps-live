@@ -21,24 +21,26 @@ import (
 	"time"
 )
 
-//go:embed web/index.html web/trends.html web/quota.html
+//go:embed web/index.html web/trends.html web/quota.html web/nodes.html web/node_plans.html
 var liveAssets embed.FS
 
-const liveVersion = "0.18.7"
+const liveVersion = "0.20.2"
 
-// RunLive starts a read-only, loopback-only dashboard. It never launches Codex,
-// reads credentials, makes outbound requests, or writes to the Codex home.
+// RunLive starts a loopback-only dashboard. Codex logs remain read-only. Only
+// authorized node tests and their saved continuations make outbound probes.
 func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("codex-tps-live", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	home := flags.String("codex-home", "", "Codex home (default: CODEX_HOME or ~/.codex)")
-	port := flags.Int("port", 8765, "loopback port; 0 chooses an available port")
+	port := flags.Int("port", 32555, "loopback port; 0 chooses an available port")
 	days := flags.Int("days", 7, "discover logs modified in the last N days; 0 includes all history")
 	interval := flags.Duration("interval", 500*time.Millisecond, "local tail polling interval (minimum 200ms)")
 	archived := flags.Bool("include-archived", false, "show archived conversations by default (archived logs are always collected)")
-	dataDir := flags.String("data-dir", "", "local quota history directory (default: user local application data/CodexTPSLive)")
+	dataDir := flags.String("data-dir", "", "local history and test-progress directory (default: user local application data/CodexTPSLive)")
 	quotaProfile := flags.String("quota-profile", "default", "local quota history namespace; does not identify a signed-in account")
 	open := flags.Bool("open", false, "open the local dashboard in the default browser")
+	clashHome := flags.String("clash-home", "", "Clash Verge data directory (default: discover in current user's application data)")
+	mihomoPath := flags.String("mihomo-path", "", "Mihomo executable (default: discover beside running Clash Verge)")
 	version := flags.Bool("version", false, "print version")
 	if err := flags.Parse(arguments); err != nil {
 		if err == flag.ErrHelp {
@@ -77,6 +79,9 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	nodes := &liveNodeService{ctx: ctx, home: *clashHome, binary: *mihomoPath}
+	plans := openNodePlans(nodes, *dataDir)
+	defer func() { stop(); nodes.close(); plans.close() }()
 	go func() {
 		monitor.poll()
 		ticker := time.NewTicker(*interval)
@@ -91,6 +96,8 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 		}
 	}()
 	mux := http.NewServeMux()
+	nodes.register(mux)
+	plans.register(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -164,7 +171,8 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 			http.Error(w, "local origin required", http.StatusForbidden)
 			return
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		nodeAction := r.Method == http.MethodPost && (r.URL.Path == "/api/nodes/start" || r.URL.Path == "/api/nodes/cancel" || r.URL.Path == "/api/node-plans/save" || r.URL.Path == "/api/node-plans/action")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !nodeAction {
 			http.Error(w, "read-only", http.StatusMethodNotAllowed)
 			return
 		}
@@ -181,7 +189,7 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 		defer cancel()
 		_ = server.Shutdown(shutdown)
 	}()
-	fmt.Fprintf(stdout, "Codex TPS Live\nDashboard: %s\nRead-only log directory: %s\nPress Ctrl+C to stop. No outbound connections or Codex requests.\n", url, resolved)
+	fmt.Fprintf(stdout, "Codex TPS Live\nDashboard: %s\nRead-only log directory: %s\nPress Ctrl+C to stop. Node probes run on demand, by enabled plans, or by unfinished-job recovery; no model generation requests.\n", url, resolved)
 	fmt.Fprintf(stdout, "Local quota history: %s\n", monitor.quota.description())
 	if *open {
 		if err := openLiveBrowser(url); err != nil {

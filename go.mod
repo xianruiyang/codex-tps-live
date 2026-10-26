@@ -6,6 +6,8 @@ toolchain go1.23.3
 
 require gonum.org/v1/plot v0.16.0
 
+require go.yaml.in/yaml/v3 v3.0.4
+
 require (
 	codeberg.org/go-fonts/liberation v0.5.0 // indirect
 	codeberg.org/go-latex/latex v0.1.0 // indirect
