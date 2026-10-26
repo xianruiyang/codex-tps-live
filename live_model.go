@@ -119,6 +119,10 @@ type liveTurn struct {
 }
 type liveSession struct {
 	ID                  string
+	metadataSet         bool
+	legacyID            string
+	hasInheritedMeta    bool
+	inheritedContext    bool
 	Title               string
 	CWD                 string
 	ParentID            string
@@ -244,10 +248,26 @@ func (s *liveSession) consume(line []byte, lineNumber int) {
 	p, _ := row["payload"].(map[string]any)
 	kind := textField(row, "type")
 	event := textField(p, "type")
+	// Imported histories contain their own task/turn events. Only a setting
+	// explicitly addressed to this thread ends that inherited context.
+	if s.inheritedContext && kind != "session_meta" {
+		if kind != "event_msg" || event != "thread_settings_applied" || textField(p, "thread_id") != s.ID {
+			return
+		}
+		s.inheritedContext = false
+	}
 	switch {
 	case kind == "session_meta":
 		if id := textField(p, "id"); id != "" {
+			// Keep the old parser's checkpoint identity solely for history lookup.
+			s.legacyID = id
+			if s.metadataSet && id != s.ID {
+				s.hasInheritedMeta, s.inheritedContext = true, true
+				return
+			}
 			s.ID = id
+			s.metadataSet = true
+			s.inheritedContext = false
 		}
 		s.CWD = textField(p, "cwd")
 		s.CreatedAt = at
@@ -274,6 +294,9 @@ func (s *liveSession) consume(line []byte, lineNumber int) {
 			}
 		}
 	case kind == "event_msg" && event == "thread_settings_applied":
+		if id := textField(p, "thread_id"); id != "" && id != s.ID {
+			return
+		}
 		settings, _ := p["thread_settings"].(map[string]any)
 		s.applyServiceTier(textField(settings, "service_tier"), at)
 	case kind == "event_msg" && event == "task_started":

@@ -191,9 +191,17 @@ func (f *liveFile) initialize(file *os.File, info os.FileInfo) error {
 				}
 			}
 		}
-		f.session.lastTotal = seed.previous
-		if seed.hasServiceTier {
-			f.session.applyServiceTier(seed.serviceTier, seed.serviceTierAt)
+		if f.session.hasInheritedMeta {
+			// A tail boundary can lie inside an imported parent's task history.
+			// Replay this file progressively to find its explicit owner boundary
+			// and reconcile all of its existing quota checkpoint keys.
+			f.session = newLiveSession(liveID(f.path))
+			f.offset, f.hasEarlier = 0, false
+		} else {
+			f.session.lastTotal = seed.previous
+			if seed.hasServiceTier {
+				f.session.applyServiceTier(seed.serviceTier, seed.serviceTierAt)
+			}
 		}
 	}
 	if !seed.latest.IsZero() {

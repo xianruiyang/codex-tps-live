@@ -36,6 +36,7 @@ type liveQuotaRecord struct {
 	Balance   *float64         `json:"credits_balance,omitempty"`
 	Usage     *liveQuotaUsage  `json:"usage,omitempty"`
 	response  *liveResponse
+	legacyID  string
 }
 
 type liveQuotaUsage struct {
@@ -114,8 +115,14 @@ func (s *liveSession) captureQuota(p map[string]any, at time.Time, previous int)
 	info, _ := p["info"].(map[string]any)
 	total, _ := info["total_token_usage"].(map[string]any)
 	checkpoint, _ := json.Marshal(total)
-	key := sha256.Sum256([]byte(s.ID + "\x00" + at.Format(time.RFC3339Nano) + "\x00" + record.Bucket + "\x00" + string(checkpoint)))
-	record.ID = hex.EncodeToString(key[:16])
+	checkpointID := func(id string) string {
+		key := sha256.Sum256([]byte(id + "\x00" + at.Format(time.RFC3339Nano) + "\x00" + record.Bucket + "\x00" + string(checkpoint)))
+		return hex.EncodeToString(key[:16])
+	}
+	record.ID = checkpointID(s.ID)
+	if s.legacyID != "" && s.legacyID != s.ID {
+		record.legacyID = checkpointID(s.legacyID)
+	}
 	s.quotaPending = append(s.quotaPending, record)
 }
 
@@ -185,6 +192,20 @@ func openLiveQuotaHistory(home, dataDir, profile string) *liveQuotaHistory {
 		h.records[record.ID] = record
 	}
 	return h
+}
+
+func (h *liveQuotaHistory) existingRecordID(record liveQuotaRecord) string {
+	if _, exists := h.records[record.ID]; exists {
+		return record.ID
+	}
+	if record.legacyID != "" {
+		if _, exists := h.records[record.legacyID]; exists {
+			// The key is opaque: reuse the old saved record rather than adding
+			// the same consumption under the corrected conversation identity.
+			return record.legacyID
+		}
+	}
+	return record.ID
 }
 
 func (h *liveQuotaHistory) put(record liveQuotaRecord) {
@@ -265,6 +286,7 @@ func (m *liveMonitor) collectQuota(files []*liveFile) {
 			}
 			if m.quota != nil {
 				for _, record := range f.session.quotaPending {
+					record.ID = m.quota.existingRecordID(record)
 					if record.response != nil {
 						fillResponseServiceTier(f.session, record.response, sessions)
 						record.Usage = quotaUsageFrom(record.response)
