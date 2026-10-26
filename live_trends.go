@@ -56,6 +56,7 @@ type liveTrendPoint struct {
 	Child                bool            `json:"child"`
 	Inherited            bool            `json:"inherited"`
 	Transport            string          `json:"transport"`
+	TransportSource      string          `json:"transport_source"`
 	TransportFallback    bool            `json:"transport_fallback"`
 	TransportInferred    bool            `json:"transport_inferred"`
 	TransportNote        string          `json:"transport_note"`
@@ -167,7 +168,7 @@ func (m *liveMonitor) trends(from, to time.Time, view string) liveTrendData {
 						agent = "子代理"
 					}
 				}
-				group.Points = append(group.Points, liveTrendPoint{At: r.RecordedAt.UnixMilli(), OutputTPS: *r.TPS.Output, VisibleTPS: *r.TPS.Visible, PerceivedTPS: *r.TPS.Perceived, ActualTPS: r.TPS.Actual, ActualEstimated: r.TPS.ActualEstimated, ActualMin: r.TPS.ActualMin, ActualMax: r.TPS.ActualMax, ActualRange: r.TPS.ActualRange, GenerationSeconds: r.GenerationSeconds, GenerationMinSeconds: r.GenerationMinSeconds, GenerationMaxSeconds: r.GenerationMaxSeconds, TTFT: r.TTFT, Output: r.Tokens.Output, Reasoning: r.Tokens.Reasoning, Seconds: r.Seconds, SessionID: s.ID, Turn: turn.Number, Response: r.TurnIndex, Agent: agent, Child: s.ParentID != "", Inherited: r.ServiceTierSource == "inherited", Transport: r.Transport, TransportFallback: r.TransportFallback, TransportInferred: r.TransportInferred, TransportNote: r.TransportNote})
+				group.Points = append(group.Points, liveTrendPoint{At: r.RecordedAt.UnixMilli(), OutputTPS: *r.TPS.Output, VisibleTPS: *r.TPS.Visible, PerceivedTPS: *r.TPS.Perceived, ActualTPS: r.TPS.Actual, ActualEstimated: r.TPS.ActualEstimated, ActualMin: r.TPS.ActualMin, ActualMax: r.TPS.ActualMax, ActualRange: r.TPS.ActualRange, GenerationSeconds: r.GenerationSeconds, GenerationMinSeconds: r.GenerationMinSeconds, GenerationMaxSeconds: r.GenerationMaxSeconds, TTFT: r.TTFT, Output: r.Tokens.Output, Reasoning: r.Tokens.Reasoning, Seconds: r.Seconds, SessionID: s.ID, Turn: turn.Number, Response: r.TurnIndex, Agent: agent, Child: s.ParentID != "", Inherited: r.ServiceTierSource == "inherited", Transport: r.Transport, TransportSource: r.TransportSource, TransportFallback: r.TransportFallback, TransportInferred: r.TransportInferred, TransportNote: r.TransportNote})
 			}
 		}
 		if inRange {

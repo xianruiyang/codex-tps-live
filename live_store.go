@@ -172,6 +172,7 @@ type liveMonitor struct {
 	captureReader  *liveCaptureReader
 	captureStatus  liveCaptureStatus
 	captureRecords map[string]liveCapturedTiming
+	transportCache *liveTransportCache
 }
 
 func newLiveMonitor(home string, days int, showArchived bool, interval time.Duration) *liveMonitor {

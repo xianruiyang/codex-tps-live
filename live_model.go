@@ -43,22 +43,24 @@ func (x liveTokens) empty() bool {
 }
 
 type liveMetrics struct {
-	Tokens               liveTokens `json:"tokens"`
-	TimedTokens          liveTokens `json:"timed_tokens"`
-	Seconds              float64    `json:"response_seconds"`
-	Responses            int        `json:"responses"`
-	TimedResponses       int        `json:"timed_responses"`
-	ActualTokens         int64      `json:"actual_tokens"`
-	ActualSeconds        float64    `json:"actual_seconds"`
-	ActualResponses      int        `json:"actual_responses"`
-	EstimatedResponses   int        `json:"estimated_responses"`
-	AssumedResponses     int        `json:"assumed_responses"`
-	RangeResponses       int        `json:"range_responses"`
-	GenerationMinSeconds float64    `json:"generation_min_seconds"`
-	GenerationMaxSeconds float64    `json:"generation_max_seconds"`
+	Transports           liveTransportSummary `json:"transports"`
+	Tokens               liveTokens           `json:"tokens"`
+	TimedTokens          liveTokens           `json:"timed_tokens"`
+	Seconds              float64              `json:"response_seconds"`
+	Responses            int                  `json:"responses"`
+	TimedResponses       int                  `json:"timed_responses"`
+	ActualTokens         int64                `json:"actual_tokens"`
+	ActualSeconds        float64              `json:"actual_seconds"`
+	ActualResponses      int                  `json:"actual_responses"`
+	EstimatedResponses   int                  `json:"estimated_responses"`
+	AssumedResponses     int                  `json:"assumed_responses"`
+	RangeResponses       int                  `json:"range_responses"`
+	GenerationMinSeconds float64              `json:"generation_min_seconds"`
+	GenerationMaxSeconds float64              `json:"generation_max_seconds"`
 }
 
 func (m *liveMetrics) add(r liveResponse) {
+	m.Transports.add(r)
 	m.Tokens.add(r.Tokens)
 	m.Responses++
 	if r.Seconds > 0 {
@@ -89,6 +91,7 @@ func (m *liveMetrics) add(r liveResponse) {
 }
 
 func (m *liveMetrics) merge(other liveMetrics) {
+	m.Transports.merge(other.Transports)
 	m.Tokens.add(other.Tokens)
 	m.TimedTokens.add(other.TimedTokens)
 	m.Seconds += other.Seconds
@@ -153,6 +156,7 @@ type liveResponse struct {
 	GenerationMinSeconds float64          `json:"generation_min_seconds"`
 	GenerationMaxSeconds float64          `json:"generation_max_seconds"`
 	Transport            string           `json:"transport"`
+	TransportSource      string           `json:"transport_source"`
 	TransportFallback    bool             `json:"transport_fallback"`
 	TransportInferred    bool             `json:"transport_inferred"`
 	TransportNote        string           `json:"transport_note"`

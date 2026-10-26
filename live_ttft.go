@@ -33,6 +33,7 @@ type liveTimingEvent struct {
 	at                          time.Time
 	process, thread, turn, kind string
 	status                      int
+	cached                      bool
 }
 
 type liveTimingReader struct {
@@ -44,11 +45,15 @@ type liveTimingReader struct {
 	historyDone    bool
 	reset          bool
 	backfillNext   bool
+	missing        bool
 }
 
 var timingThread = regexp.MustCompile(`\bthread_id[=:]\s*"?([0-9a-fA-F-]{36})`)
 var timingTurn = regexp.MustCompile(`\bturn_id[=:]\s*"?([0-9a-fA-F-]{36})`)
 var timingStatus = regexp.MustCompile(`\bstatus[=:]\s*(\d{3})\b`)
+var timingWSRequest = regexp.MustCompile(`\b(?:model_client\.stream_responses_websocket|responses_websocket\.stream_request)\b`)
+var timingHTTPRequest = regexp.MustCompile(`\b(?:model_client\.stream_responses_api|responses\.stream_request|responses\.stream)\b`)
+var timingWarmup = regexp.MustCompile(`\b(?:websocket\.)?warmup"?\s*[=:]\s*"?true\b|\bgenerate"?\s*[=:]\s*"?false\b`)
 
 func timingField(pattern *regexp.Regexp, body string) string {
 	if match := pattern.FindStringSubmatch(body); len(match) == 2 {
@@ -71,10 +76,12 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 	if r.db == nil {
 		if _, err := os.Stat(r.path); err != nil {
 			if os.IsNotExist(err) {
+				r.missing = true
 				return nil, nil
 			}
 			return nil, err
 		}
+		r.missing = false
 		absolute, err := filepath.Abs(r.path)
 		if err != nil {
 			return nil, err
@@ -106,8 +113,11 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 	}
 	if r.historyFrom.IsZero() || since.Before(r.historyFrom) {
 		r.historyFrom, r.historyDone = since, false
+		if r.oldest == 0 {
+			r.latest = 0
+		}
 	}
-	const fields = `SELECT id,ts,ts_nanos,coalesce(process_uuid,''),coalesce(thread_id,''),target,substr(coalesce(feedback_log_body,''),1,8192) FROM logs WHERE target IN ('codex_http_client::request','codex_http_client::client','codex_api::endpoint::responses_websocket') AND ts >= ?`
+	const fields = `SELECT id,ts,ts_nanos,coalesce(process_uuid,''),coalesce(thread_id,''),target,substr(coalesce(feedback_log_body,''),1,8192) FROM logs WHERE target IN ('codex_http_client::request','codex_http_client::client','codex_api::endpoint::responses_websocket','feedback_tags','codex_core::client','codex_api::sse::responses') AND ts >= ?`
 	query, args := "", []any{since.Unix()}
 	forward := r.latest > 0 && maximum > r.latest
 	if forward && r.backfillNext && !r.historyDone && r.oldest > 0 {
@@ -118,10 +128,12 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 		query = fields + " AND id > ? AND id <= ? ORDER BY id LIMIT 128"
 		args = append(args, r.latest, maximum)
 	} else if r.latest == 0 {
-		query = fields + " AND id <= ? ORDER BY ts DESC,ts_nanos DESC,id DESC LIMIT 128"
+		// Page by the same immutable key as the cursor. Log timestamps can be
+		// out of insertion order across processes and delayed batches.
+		query = fields + " AND id <= ? ORDER BY id DESC LIMIT 128"
 		args = append(args, maximum)
 	} else if !r.historyDone && r.oldest > 0 {
-		query = fields + " AND id < ? ORDER BY ts DESC,ts_nanos DESC,id DESC LIMIT 128"
+		query = fields + " AND id < ? ORDER BY id DESC LIMIT 128"
 		args = append(args, r.oldest)
 	} else {
 		return nil, nil
@@ -152,7 +164,20 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 			event.thread = timingField(timingThread, body)
 		}
 		event.turn = timingField(timingTurn, body)
+		requestTags := target == "feedback_tags" || target == "codex_api::sse::responses"
+		wsRequest, httpRequest := requestTags && timingWSRequest.MatchString(body), requestTags && timingHTTPRequest.MatchString(body)
 		switch {
+		case (wsRequest || httpRequest) && timingWarmup.MatchString(body):
+			// generate=false / warmup is not an inference request.
+			continue
+		case wsRequest && httpRequest:
+			event.kind = "mixed_request"
+		case wsRequest:
+			event.kind = "websocket_request"
+		case httpRequest:
+			event.kind = "http_request"
+		case target == "codex_core::client" && strings.Contains(body, "falling back to HTTP"):
+			event.kind = "http_fallback"
 		case target == "codex_http_client::request" && strings.Contains(body, "Compressed request body with zstd"):
 			event.kind = "compressed"
 		case target == "codex_http_client::client":
@@ -162,7 +187,8 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 				event.kind = "headers"
 			}
 		case target == "codex_api::endpoint::responses_websocket":
-			event.kind = "websocket"
+			// Endpoint/handshake messages alone do not confirm request transport.
+			event.kind = "websocket_connection"
 		}
 		// Raw log bodies (including HTTP headers) never enter the API or cache.
 		if event.kind != "" {
@@ -193,10 +219,11 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 }
 
 type liveTimingIndex struct {
-	events  map[int64]liveTimingEvent
-	threads map[string][]liveTimingEvent
-	headers map[string][]liveTimingEvent
-	pending bool
+	events      map[string]liveTimingEvent
+	threads     map[string][]liveTimingEvent
+	headers     map[string][]liveTimingEvent
+	pending     bool
+	unavailable bool
 }
 
 func (x *liveTimingIndex) add(events []liveTimingEvent) {
@@ -204,10 +231,10 @@ func (x *liveTimingIndex) add(events []liveTimingEvent) {
 		return
 	}
 	if x.events == nil {
-		x.events = map[int64]liveTimingEvent{}
+		x.events = map[string]liveTimingEvent{}
 	}
 	for _, e := range events {
-		x.events[e.id] = e
+		x.events[timingEventKey(e)] = e
 	}
 	x.threads, x.headers = map[string][]liveTimingEvent{}, map[string][]liveTimingEvent{}
 	for _, e := range x.events {
@@ -244,6 +271,10 @@ func (m *liveMonitor) enrichTiming(s *liveSession, turn *liveTurn, r *liveRespon
 	}
 	if r.StartedAt.IsZero() || r.CompletedAt.IsZero() || r.Seconds <= 0 {
 		r.assumeFirstOnly(turn, "响应时间边界不完整。")
+		return
+	}
+	if r.Transport == "websocket" || r.Transport == "mixed" {
+		r.assumeFirstOnly(turn, "请求协议证据为 WebSocket 或混合路径，不把通用 HTTP 日志分配为本次首 Token 计时。")
 		return
 	}
 	// Provider engine/cumulative timing is diagnostic data. It has neither a
@@ -328,58 +359,6 @@ func (r *liveResponse) assumeFirstOnly(turn *liveTurn, reason string) {
 	r.applyFirstToken()
 }
 
-func (m *liveMonitor) fillTransport(s *liveSession, turn *liveTurn, r *liveResponse) {
-	r.Transport, r.TransportNote = "unknown", "现存客户端日志未记录可归属的传输方式；不通过模型名或 TTFT 数值猜测。"
-	if r.StartedAt.IsZero() || r.CompletedAt.IsZero() || r.CompletedAt.Before(r.StartedAt) {
-		return
-	}
-	var firstHTTP, firstWS time.Time
-	for _, event := range timingRange(m.timings.threads[s.ID], r.StartedAt, r.CompletedAt) {
-		if event.turn != "" && event.turn != turn.ID {
-			continue
-		}
-		if (event.kind == "compressed" || event.kind == "headers" && event.status == 200) && firstHTTP.IsZero() {
-			firstHTTP = event.at
-		}
-		if event.kind == "websocket" && firstWS.IsZero() {
-			firstWS = event.at
-		}
-	}
-	if !firstHTTP.IsZero() {
-		r.Transport, r.TransportNote = "http", "同一对话、轮次及响应时间范围内有 HTTP 请求压缩或响应头日志。"
-		r.TransportFallback = !firstWS.IsZero() && firstWS.Before(firstHTTP)
-		if r.TransportFallback {
-			r.TransportNote += "先有 WebSocket 端点记录，随后进入 HTTP 路径，按 HTTP 回退显示；不是抓包确认。"
-		}
-	} else if !firstWS.IsZero() {
-		r.Transport, r.TransportNote = "websocket", "同一对话、轮次及响应时间范围内有 WebSocket 端点日志，未观测 HTTP 路径；按客户端日志判断，不把端点事件当作首 token。"
-	} else {
-		// Reused connections need not emit an endpoint event on every request.
-		// Preserve the evidence level instead of pretending this is a new event.
-		events := m.timings.threads[s.ID]
-		before := sort.Search(len(events), func(i int) bool { return events[i].at.After(r.StartedAt) })
-		for i := before - 1; i >= 0; i-- {
-			e := events[i]
-			if e.at.Before(turn.StartedAt) {
-				break
-			}
-			if e.turn != turn.ID {
-				continue
-			}
-			if e.kind == "websocket" {
-				r.Transport = "websocket"
-			} else if e.kind == "compressed" || e.kind == "headers" && e.status == 200 {
-				r.Transport = "http"
-			} else {
-				continue
-			}
-			r.TransportInferred = true
-			r.TransportNote = "本次未记录独立传输事件；沿用同一对话、同一轮次此前最近的传输日志推断（可能复用连接），不是逐请求确认。"
-			break
-		}
-	}
-}
-
 func (r *liveResponse) applyFirstToken() bool {
 	if r.TTFT.Source == "request_headers" || r.TTFT.Source == "request_headers_temporal" {
 		upper := r.FirstOutputAt.Sub(r.StartedAt).Seconds()
@@ -436,6 +415,10 @@ func (m *liveMonitor) pollTiming(now time.Time) {
 		return
 	}
 	events, err := m.timingReader.read(now, since)
+	if m.transportCache == nil {
+		m.transportCache = &liveTransportCache{}
+	}
+	retained, cacheErr := m.transportCache.sync(m.home, events)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err == nil {
@@ -447,9 +430,15 @@ func (m *liveMonitor) pollTiming(now time.Time) {
 		m.addError("首 Token 本地日志读取暂不可用: " + err.Error())
 	}
 	if m.timingReader.reset {
-		m.timings = liveTimingIndex{}
+		// A database replacement does not invalidate previously observed native
+		// request protocols. Timestamp/process keyed observations do not collide.
 		m.timingReader.reset = false
 	}
+	if cacheErr != nil {
+		m.addError("本机协议索引缓存不可用：" + cacheErr.Error())
+	}
+	m.timings.add(retained)
 	m.timings.add(events)
-	m.timings.pending = !m.timingReader.historyDone
+	m.timings.pending = !m.timingReader.historyDone && !m.timingReader.missing
+	m.timings.unavailable = m.timingReader.missing
 }
