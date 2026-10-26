@@ -153,22 +153,26 @@ func (f *liveFile) read() error {
 }
 
 type liveMonitor struct {
-	mu           sync.RWMutex
-	home         string
-	days         int
-	showArchived bool
-	interval     time.Duration
-	files        map[string]*liveFile
-	errors       []string
-	updated      time.Time
-	discovered   time.Time
-	trendSince   time.Time
-	trendViews   map[string]liveTrendRequest
-	quota        *liveQuotaHistory
-	names        liveSessionNames
-	timingReader *liveTimingReader
-	timings      liveTimingIndex
-	timingError  string
+	mu             sync.RWMutex
+	home           string
+	days           int
+	showArchived   bool
+	interval       time.Duration
+	files          map[string]*liveFile
+	errors         []string
+	updated        time.Time
+	discovered     time.Time
+	trendSince     time.Time
+	trendViews     map[string]liveTrendRequest
+	quota          *liveQuotaHistory
+	names          liveSessionNames
+	timingReader   *liveTimingReader
+	timings        liveTimingIndex
+	timingError    string
+	captureReader  *liveCaptureReader
+	captureStatus  liveCaptureStatus
+	captureRecords map[string]liveCapturedTiming
+	captureThreads map[string][]liveCapturedTiming
 }
 
 func newLiveMonitor(home string, days int, showArchived bool, interval time.Duration) *liveMonitor {
@@ -297,6 +301,7 @@ func (m *liveMonitor) poll() {
 	m.updated = time.Now()
 	m.mu.Unlock()
 	m.pollTiming(time.Now())
+	m.pollCapture(time.Now())
 }
 
 // A duplicate/moved rollout represents the same conversation, never additive usage.
@@ -416,6 +421,7 @@ type liveSnapshot struct {
 	Sessions              []liveSessionView `json:"sessions"`
 	CreditRules           liveCreditPolicy  `json:"credit_rules"`
 	ShowArchivedByDefault bool              `json:"show_archived_by_default"`
+	CaptureStatus         liveCaptureStatus `json:"capture_status"`
 }
 
 func (m *liveMonitor) snapshot(window int, policies ...liveQuotaRules) liveSnapshot {
@@ -426,6 +432,7 @@ func (m *liveMonitor) snapshot(window int, policies ...liveQuotaRules) liveSnaps
 	}
 	rules := creditRules(policies)
 	result := liveSnapshot{Home: m.home, Days: m.days, IntervalMS: m.interval.Milliseconds(), UpdatedAt: m.updated, Errors: m.errors, Sessions: []liveSessionView{}, CreditRules: creditPolicy(rules), ShowArchivedByDefault: m.showArchived}
+	result.CaptureStatus = m.captureStatus
 	sessions := m.sessions()
 	for _, f := range sessions {
 		result.Sessions = append(result.Sessions, m.namedSessionView(f, time.Now(), window, sessions, rules))

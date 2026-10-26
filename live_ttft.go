@@ -246,6 +246,16 @@ func (m *liveMonitor) enrichTiming(s *liveSession, turn *liveTurn, r *liveRespon
 		r.assumeFirstOnly(turn, "响应时间边界不完整。")
 		return
 	}
+	if r.Transport != "http" || r.TransportInferred {
+		if captured := m.capturedFirstToken(s, turn, r); captured != nil {
+			r.TTFT = captured
+			if r.applyFirstToken() {
+				r.Transport, r.TransportInferred = "websocket", false
+				r.TransportNote = "按本次响应内唯一 request_start_ms 关联到 Codex 原生 WebSocket timing 日志。"
+				return
+			}
+		}
+	}
 	var requests []liveTimingEvent
 	for _, e := range timingRange(m.timings.threads[s.ID], r.StartedAt, r.CompletedAt) {
 		if e.kind == "compressed" && (e.turn == "" || e.turn == turn.ID) {

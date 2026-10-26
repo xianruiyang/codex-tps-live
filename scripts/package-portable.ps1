@@ -16,6 +16,19 @@ $taskLauncher = [string]::Join("`r`n", @(
     ''
 ))
 [System.IO.File]::WriteAllText((Join-Path $taskOutput '启动监控.cmd'), $taskLauncher, $taskUtf8)
+foreach ($taskCaptureCommand in @(
+    @{ Name = '启动Codex计时采集.cmd'; Argument = '--capture-launch' }
+    @{ Name = '撤销Codex计时采集.cmd'; Argument = '--capture-disable' }
+)) {
+    $taskCaptureLauncher = [string]::Join("`r`n", @(
+        '@echo off'
+        'chcp 65001 >nul'
+        ('"%~dp0codex-tps-capture.exe" ' + $taskCaptureCommand.Argument)
+        'pause'
+        ''
+    ))
+    [System.IO.File]::WriteAllText((Join-Path $taskOutput $taskCaptureCommand.Name), $taskCaptureLauncher, $taskUtf8)
+}
 $taskReadme = [System.IO.File]::ReadAllText((Join-Path $taskRepo 'README.md'))
 # Offline CLI guides stay in the source tree; link to their published copies.
 $taskReadme = $taskReadme.Replace('(README.md)', '(使用说明.md)').Replace('(README.en.md)', '(Usage.en.md)')
@@ -32,6 +45,9 @@ Copy-Item -LiteralPath (Join-Path $taskRepo 'THIRD-PARTY-NOTICES.md') -Destinati
 # Include only the current portable files, never local logs or historical builds.
 $taskFiles = @(
     $taskProgram
+    (Join-Path $taskOutput 'codex-tps-capture.exe')
+    (Join-Path $taskOutput '启动Codex计时采集.cmd')
+    (Join-Path $taskOutput '撤销Codex计时采集.cmd')
     (Join-Path $taskOutput '启动监控.cmd')
     (Join-Path $taskOutput 'LICENSE')
     (Join-Path $taskOutput 'LICENSE.zh-CN.md')

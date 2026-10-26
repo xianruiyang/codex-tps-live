@@ -11,7 +11,7 @@ $taskProgram = Join-Path $taskOutput 'codex-tps-live.exe'
 $taskGo = (Get-Command -Name $GoExe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 New-Item -ItemType Directory -Path $taskOutput -Force | Out-Null
 
-# Build one self-contained executable for baseline Windows x64 machines.
+# Build the monitor and optional stderr-only collector for baseline Windows x64.
 $taskTarget = @{ GOOS = 'windows'; GOARCH = 'amd64'; GOAMD64 = 'v1'; CGO_ENABLED = '0' }
 $taskPrevious = @{}
 Push-Location -LiteralPath $taskRepo
@@ -22,6 +22,8 @@ try {
     }
     & $taskGo build -trimpath -buildvcs=false -o $taskProgram ./cmd/codex-tps-live
     if ($LASTEXITCODE -ne 0) { throw "Go build failed (exit $LASTEXITCODE)." }
+    & $taskGo build -trimpath -buildvcs=false -o (Join-Path $taskOutput 'codex-tps-capture.exe') ./cmd/codex-tps-capture
+    if ($LASTEXITCODE -ne 0) { throw "Capture build failed (exit $LASTEXITCODE)." }
 }
 finally {
     foreach ($taskName in $taskPrevious.Keys) {
