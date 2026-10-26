@@ -43,11 +43,15 @@ func (x liveTokens) empty() bool {
 }
 
 type liveMetrics struct {
-	Tokens         liveTokens `json:"tokens"`
-	TimedTokens    liveTokens `json:"timed_tokens"`
-	Seconds        float64    `json:"response_seconds"`
-	Responses      int        `json:"responses"`
-	TimedResponses int        `json:"timed_responses"`
+	Tokens             liveTokens `json:"tokens"`
+	TimedTokens        liveTokens `json:"timed_tokens"`
+	Seconds            float64    `json:"response_seconds"`
+	Responses          int        `json:"responses"`
+	TimedResponses     int        `json:"timed_responses"`
+	ActualTokens       int64      `json:"actual_tokens"`
+	ActualSeconds      float64    `json:"actual_seconds"`
+	ActualResponses    int        `json:"actual_responses"`
+	EstimatedResponses int        `json:"estimated_responses"`
 }
 
 func (m *liveMetrics) add(r liveResponse) {
@@ -58,6 +62,14 @@ func (m *liveMetrics) add(r liveResponse) {
 		m.Seconds += r.Seconds
 		m.TimedResponses++
 	}
+	if r.GenerationSeconds > 0 && r.TPS.Actual != nil {
+		m.ActualTokens += r.Tokens.Output
+		m.ActualSeconds += r.GenerationSeconds
+		m.ActualResponses++
+		if r.TTFT != nil && r.TTFT.Estimated {
+			m.EstimatedResponses++
+		}
+	}
 }
 
 func (m *liveMetrics) merge(other liveMetrics) {
@@ -66,6 +78,10 @@ func (m *liveMetrics) merge(other liveMetrics) {
 	m.Seconds += other.Seconds
 	m.Responses += other.Responses
 	m.TimedResponses += other.TimedResponses
+	m.ActualTokens += other.ActualTokens
+	m.ActualSeconds += other.ActualSeconds
+	m.ActualResponses += other.ActualResponses
+	m.EstimatedResponses += other.EstimatedResponses
 }
 func ratio(n float64, d float64) *float64 {
 	if d <= 0 {
@@ -76,13 +92,16 @@ func ratio(n float64, d float64) *float64 {
 }
 
 type liveRates struct {
-	Output    *float64 `json:"output"`
-	Visible   *float64 `json:"visible"`
-	Reasoning *float64 `json:"reasoning"`
+	Output          *float64 `json:"output"`
+	Visible         *float64 `json:"visible"`
+	Reasoning       *float64 `json:"reasoning"`
+	Perceived       *float64 `json:"perceived"`
+	Actual          *float64 `json:"actual"`
+	ActualEstimated bool     `json:"actual_estimated"`
 }
 
 func (m liveMetrics) rates() liveRates {
-	return liveRates{ratio(float64(m.TimedTokens.Output), m.Seconds), ratio(float64(m.TimedTokens.Visible), m.Seconds), ratio(float64(m.TimedTokens.Reasoning), m.Seconds)}
+	return liveRates{Output: ratio(float64(m.TimedTokens.Output), m.Seconds), Visible: ratio(float64(m.TimedTokens.Visible), m.Seconds), Reasoning: ratio(float64(m.TimedTokens.Reasoning), m.Seconds), Perceived: ratio(float64(m.TimedTokens.Output), m.Seconds), Actual: ratio(float64(m.ActualTokens), m.ActualSeconds), ActualEstimated: m.EstimatedResponses > 0}
 }
 
 type liveResponse struct {
@@ -95,12 +114,19 @@ type liveResponse struct {
 	ServiceTierSource string           `json:"service_tier_source,omitempty"`
 	StartedAt         time.Time        `json:"started_at"`
 	CompletedAt       time.Time        `json:"completed_at"`
+	FirstOutputAt     time.Time        `json:"first_output_at"`
 	RecordedAt        time.Time        `json:"recorded_at"`
 	Seconds           float64          `json:"seconds"`
 	Tokens            liveTokens       `json:"tokens"`
 	TPS               liveRates        `json:"tps"`
 	TimingNote        string           `json:"timing_note,omitempty"`
 	Credits           *liveCreditUsage `json:"credits,omitempty"`
+	TTFT              *liveFirstToken  `json:"ttft,omitempty"`
+	GenerationSeconds float64          `json:"generation_seconds"`
+	Transport         string           `json:"transport"`
+	TransportFallback bool             `json:"transport_fallback"`
+	TransportInferred bool             `json:"transport_inferred"`
+	TransportNote     string           `json:"transport_note"`
 }
 type liveTurn struct {
 	ID                 string         `json:"id"`
@@ -141,6 +167,7 @@ type liveSession struct {
 	serviceTier         string
 	serviceTiers        []liveTierSetting
 	start, generatedEnd *time.Time
+	firstGenerated      *time.Time
 	sawStart            bool
 	lastTotal           *liveTokens
 	lastUsageKey        string
@@ -315,7 +342,7 @@ func (s *liveSession) consume(line []byte, lineNumber int) {
 		if len(s.serviceTiers) > 0 {
 			t.ServiceTierSource = "logged"
 		}
-		s.start, s.generatedEnd = timePointer(at), nil
+		s.start, s.generatedEnd, s.firstGenerated = timePointer(at), nil, nil
 		s.sawStart = true
 	case kind == "turn_context":
 		if id := textField(p, "turn_id"); id != "" {
@@ -371,6 +398,9 @@ func (s *liveSession) consume(line []byte, lineNumber int) {
 			s.setTitle(p)
 		}
 		if isGeneratedItem(p) {
+			if s.firstGenerated == nil {
+				s.firstGenerated = timePointer(at)
+			}
 			s.generatedEnd = timePointer(at)
 		} else if s.generatedEnd == nil && isInputItem(p) {
 			s.start = timePointer(at)
@@ -408,7 +438,7 @@ func (s *liveSession) consumeUsage(p map[string]any, at time.Time) {
 		} else if last == nil {
 			s.warn("首个累计检查点缺少最近响应用量，已作为基线而不归入当前轮次")
 			s.lastTotal = &current
-			s.start, s.generatedEnd = timePointer(at), nil
+			s.start, s.generatedEnd, s.firstGenerated = timePointer(at), nil, nil
 			return
 		}
 		s.lastTotal = &current
@@ -430,6 +460,13 @@ func (s *liveSession) consumeUsage(p map[string]any, at time.Time) {
 	}
 	t := s.current
 	r := liveResponse{Index: s.Metrics.Responses + 1, TurnIndex: len(t.Responses) + 1, TurnID: t.ID, Model: s.model, Effort: s.effort, ServiceTier: s.serviceTier, RecordedAt: at, Tokens: usage}
+	// Only accept a native value explicitly scoped to last_token_usage. The
+	// task_complete value is turn-wide and remains on liveTurn instead.
+	if value, ok := last["time_to_first_token_ms"].(json.Number); ok {
+		if ms, err := value.Float64(); err == nil && ms >= 0 {
+			r.TTFT = &liveFirstToken{Seconds: ms / 1000, Source: "native_response", Note: "最近一次响应用量直接记录的原生首 Token 耗时。"}
+		}
+	}
 	t.ServiceTier = s.serviceTier
 	if len(s.serviceTiers) > 0 {
 		r.ServiceTierSource, t.ServiceTierSource = "logged", "logged"
@@ -440,6 +477,9 @@ func (s *liveSession) consumeUsage(p map[string]any, at time.Time) {
 	if s.generatedEnd != nil {
 		r.CompletedAt = *s.generatedEnd
 	}
+	if s.firstGenerated != nil {
+		r.FirstOutputAt = *s.firstGenerated
+	}
 	if s.sawStart && s.start != nil && s.generatedEnd != nil {
 		elapsed := s.generatedEnd.Sub(*s.start).Seconds()
 		if elapsed > 0 {
@@ -447,7 +487,7 @@ func (s *liveSession) consumeUsage(p map[string]any, at time.Time) {
 			sample := ResponseSample{ElapsedSeconds: elapsed, OutputTokens: usage.Output, ReasoningOutputTokens: usage.Reasoning, VisibleOutputTokens: usage.Visible}
 			r.Seconds = elapsed
 			output, visible, reasoning := sample.EffectiveTPS(), sample.VisibleTPS(), sample.ReasoningTPS()
-			r.TPS = liveRates{&output, &visible, &reasoning}
+			r.TPS = liveRates{Output: &output, Visible: &visible, Reasoning: &reasoning, Perceived: &output}
 		}
 	}
 	if r.Seconds == 0 {
@@ -463,5 +503,5 @@ func (s *liveSession) consumeUsage(p map[string]any, at time.Time) {
 	if at.After(s.LastResponseAt) {
 		s.LastResponseAt = at
 	}
-	s.start, s.generatedEnd = timePointer(at), nil
+	s.start, s.generatedEnd, s.firstGenerated = timePointer(at), nil, nil
 }

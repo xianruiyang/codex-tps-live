@@ -27,6 +27,7 @@ $taskEnglishReadme = $taskEnglishReadme.Replace('(docs/offline-cli.en.md)', '(ht
 [System.IO.File]::WriteAllText((Join-Path $taskOutput 'Usage.en.md'), $taskEnglishReadme, $taskUtf8)
 Copy-Item -LiteralPath (Join-Path $taskRepo 'LICENSE') -Destination (Join-Path $taskOutput 'LICENSE') -Force
 Copy-Item -LiteralPath (Join-Path $taskRepo 'LICENSE.zh-CN.md') -Destination (Join-Path $taskOutput 'LICENSE.zh-CN.md') -Force
+Copy-Item -LiteralPath (Join-Path $taskRepo 'THIRD-PARTY-NOTICES.md') -Destination (Join-Path $taskOutput 'THIRD-PARTY-NOTICES.md') -Force
 
 # Include only the current portable files, never local logs or historical builds.
 $taskFiles = @(
@@ -36,6 +37,7 @@ $taskFiles = @(
     (Join-Path $taskOutput 'LICENSE.zh-CN.md')
     (Join-Path $taskOutput '使用说明.md')
     (Join-Path $taskOutput 'Usage.en.md')
+    (Join-Path $taskOutput 'THIRD-PARTY-NOTICES.md')
 )
 Compress-Archive -LiteralPath $taskFiles -DestinationPath $taskArchive -Force
 Write-Output "Portable directory: $taskOutput"

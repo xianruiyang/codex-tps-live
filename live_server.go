@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,7 +24,7 @@ import (
 //go:embed web/index.html web/trends.html web/quota.html
 var liveAssets embed.FS
 
-const liveVersion = "0.17.6"
+const liveVersion = "0.18.0"
 
 // RunLive starts a read-only, loopback-only dashboard. It never launches Codex,
 // reads credentials, makes outbound requests, or writes to the Codex home.
@@ -66,6 +67,8 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	address := listener.Addr().String()
 	url := "http://" + address
 	monitor := newLiveMonitor(resolved, *days, *archived, *interval)
+	monitor.timingReader = &liveTimingReader{path: filepath.Join(resolved, "logs_2.sqlite")}
+	defer monitor.timingReader.close()
 	monitor.quota = openLiveQuotaHistory(resolved, *dataDir, *quotaProfile)
 	defer func() {
 		monitor.mu.Lock()
@@ -232,13 +235,23 @@ func safeLiveCSV(s string) string {
 func writeLiveCSV(stream io.Writer, id string, responses []liveResponse) {
 	w := csv.NewWriter(stream)
 	w.UseCRLF = true
-	_ = w.Write([]string{"session_id", "turn_id", "response_index", "turn_response_index", "model", "reasoning_effort", "started_at", "completed_at", "usage_recorded_at", "elapsed_seconds", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "visible_output_tokens", "effective_tps", "reasoning_tps", "visible_tps", "timing_note"})
+	_ = w.Write([]string{"session_id", "turn_id", "response_index", "turn_response_index", "model", "reasoning_effort", "started_at", "completed_at", "usage_recorded_at", "elapsed_seconds", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "visible_output_tokens", "effective_tps", "reasoning_tps", "visible_tps", "timing_note", "perceived_tps", "actual_tps", "ttft_seconds", "ttft_estimated", "ttft_source", "generation_seconds", "ttft_upper_bound", "transport", "transport_fallback", "transport_note", "transport_inferred"})
 	for _, r := range responses {
 		seconds := ""
 		if r.Seconds > 0 {
 			seconds = fmt.Sprintf("%.6f", r.Seconds)
 		}
-		_ = w.Write([]string{safeLiveCSV(id), safeLiveCSV(r.TurnID), strconv.Itoa(r.Index), strconv.Itoa(r.TurnIndex), safeLiveCSV(r.Model), safeLiveCSV(r.Effort), liveTime(r.StartedAt), liveTime(r.CompletedAt), liveTime(r.RecordedAt), seconds, strconv.FormatInt(r.Tokens.Input, 10), strconv.FormatInt(r.Tokens.Cached, 10), strconv.FormatInt(r.Tokens.CacheWrite, 10), strconv.FormatInt(r.Tokens.Output, 10), strconv.FormatInt(r.Tokens.Reasoning, 10), strconv.FormatInt(r.Tokens.Visible, 10), liveDecimal(r.TPS.Output), liveDecimal(r.TPS.Reasoning), liveDecimal(r.TPS.Visible), safeLiveCSV(r.TimingNote)})
+		first, estimated, source := "", "", ""
+		upperBound := ""
+		if r.TTFT != nil {
+			first, estimated, source = fmt.Sprintf("%.6f", r.TTFT.Seconds), strconv.FormatBool(r.TTFT.Estimated), r.TTFT.Source
+			upperBound = strconv.FormatBool(r.TTFT.UpperBound)
+		}
+		generation := ""
+		if r.GenerationSeconds > 0 {
+			generation = fmt.Sprintf("%.6f", r.GenerationSeconds)
+		}
+		_ = w.Write([]string{safeLiveCSV(id), safeLiveCSV(r.TurnID), strconv.Itoa(r.Index), strconv.Itoa(r.TurnIndex), safeLiveCSV(r.Model), safeLiveCSV(r.Effort), liveTime(r.StartedAt), liveTime(r.CompletedAt), liveTime(r.RecordedAt), seconds, strconv.FormatInt(r.Tokens.Input, 10), strconv.FormatInt(r.Tokens.Cached, 10), strconv.FormatInt(r.Tokens.CacheWrite, 10), strconv.FormatInt(r.Tokens.Output, 10), strconv.FormatInt(r.Tokens.Reasoning, 10), strconv.FormatInt(r.Tokens.Visible, 10), liveDecimal(r.TPS.Output), liveDecimal(r.TPS.Reasoning), liveDecimal(r.TPS.Visible), safeLiveCSV(r.TimingNote), liveDecimal(r.TPS.Perceived), liveDecimal(r.TPS.Actual), first, estimated, source, generation, upperBound, r.Transport, strconv.FormatBool(r.TransportFallback), safeLiveCSV(r.TransportNote), strconv.FormatBool(r.TransportInferred)})
 	}
 	w.Flush()
 }

@@ -166,6 +166,9 @@ type liveMonitor struct {
 	trendViews   map[string]liveTrendRequest
 	quota        *liveQuotaHistory
 	names        liveSessionNames
+	timingReader *liveTimingReader
+	timings      liveTimingIndex
+	timingError  string
 }
 
 func newLiveMonitor(home string, days int, showArchived bool, interval time.Duration) *liveMonitor {
@@ -262,6 +265,9 @@ func (m *liveMonitor) poll() {
 	m.mu.Lock()
 	now := time.Now()
 	m.errors = []string{}
+	if m.timingError != "" {
+		m.addError(m.timingError)
+	}
 	m.refreshSessionNames()
 	m.updateTrendScope(now)
 	if m.discovered.IsZero() || now.Sub(m.discovered) >= 5*time.Second {
@@ -290,6 +296,7 @@ func (m *liveMonitor) poll() {
 	m.collectQuota(files)
 	m.updated = time.Now()
 	m.mu.Unlock()
+	m.pollTiming(time.Now())
 }
 
 // A duplicate/moved rollout represents the same conversation, never additive usage.
@@ -337,6 +344,7 @@ type liveSessionView struct {
 	PendingLine       bool            `json:"pending_line"`
 	LatestResponse    *liveResponse   `json:"latest_response"`
 	Credits           liveCreditUsage `json:"credits"`
+	TimingPending     bool            `json:"timing_pending"`
 }
 
 func windowStart(s *liveSession, window int) int { return max(0, len(s.Turns)-window) }
@@ -444,6 +452,7 @@ type liveTurnView struct {
 	TPS      liveRates       `json:"tps"`
 	Position int             `json:"position"`
 	Credits  liveCreditUsage `json:"credits"`
+	TTFT     *liveFirstToken `json:"ttft,omitempty"`
 }
 type liveDetail struct {
 	Session     liveSessionView  `json:"session"`
@@ -468,6 +477,7 @@ func (m *liveMonitor) detail(id string, offset, limit, window int, policies ...l
 	out := liveDetail{Session: m.namedSessionView(f, time.Now(), window, sessions, rules), Turns: []liveTurnView{}, Total: len(s.Turns) - start, Offset: offset, CreditRules: creditPolicy(rules)}
 	for i := len(s.Turns) - 1 - offset; i >= start && len(out.Turns) < limit; i-- {
 		copy := *s.Turns[i]
+		copy.Metrics = m.timedTurn(s, s.Turns[i])
 		if copy.ServiceTierSource == "" {
 			copy.ServiceTier, copy.ServiceTierSource = inheritedServiceTier(s, sessions, copy.StartedAt, false)
 		}
@@ -476,7 +486,13 @@ func (m *liveMonitor) detail(id string, offset, limit, window int, policies ...l
 				copy.Title = name
 			}
 		}
-		out.Turns = append(out.Turns, liveTurnView{liveTurn: &copy, TPS: copy.Metrics.rates(), Position: len(s.Turns) - i, Credits: turnCredits(s, s.Turns[i], sessions, rules)})
+		var first *liveFirstToken
+		if len(copy.Responses) > 0 {
+			response := copy.Responses[0]
+			m.enrichTiming(s, s.Turns[i], &response)
+			first = response.TTFT
+		}
+		out.Turns = append(out.Turns, liveTurnView{liveTurn: &copy, TPS: copy.Metrics.rates(), Position: len(s.Turns) - i, Credits: turnCredits(s, s.Turns[i], sessions, rules), TTFT: first})
 	}
 	return out, true
 }
@@ -495,6 +511,7 @@ func (m *liveMonitor) responses(id, turnID string, policies ...liveQuotaRules) (
 	rows := append([]liveResponse{}, t.Responses...)
 	rules := creditRules(policies)
 	for i := range rows {
+		m.enrichTiming(f.session, t, &rows[i])
 		fillResponseServiceTier(f.session, &rows[i], sessions)
 		priceResponse(&rows[i], rules)
 	}
@@ -510,7 +527,11 @@ func (m *liveMonitor) allResponses(id string, window int) ([]liveResponse, bool)
 	f.requestWindow(window)
 	result := []liveResponse{}
 	for _, t := range f.session.Turns[windowStart(f.session, window):] {
-		result = append(result, t.Responses...)
+		for _, recorded := range t.Responses {
+			r := recorded
+			m.enrichTiming(f.session, t, &r)
+			result = append(result, r)
+		}
 	}
 	return result, true
 }

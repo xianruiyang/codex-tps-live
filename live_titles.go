@@ -63,6 +63,17 @@ func (m *liveMonitor) refreshSessionNames() {
 
 func (m *liveMonitor) namedSessionView(f *liveFile, now time.Time, window int, sessions map[string]*liveFile, rules liveQuotaRules) liveSessionView {
 	v := tierSessionView(f, now, window, sessions, rules)
+	v.TimingPending = m.timings.pending
+	v.Metrics = liveMetrics{}
+	for _, turn := range f.session.Turns[windowStart(f.session, window):] {
+		v.Metrics.merge(m.timedTurn(f.session, turn))
+	}
+	v.TPS = v.Metrics.rates()
+	if v.LatestResponse != nil {
+		if turn := f.session.turnsByID[v.LatestResponse.TurnID]; turn != nil {
+			m.enrichTiming(f.session, turn, v.LatestResponse)
+		}
+	}
 	if name := m.names.entries[v.ID].Name; name != "" {
 		v.Title = name
 	}
