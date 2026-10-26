@@ -28,11 +28,11 @@ jobs:
             Windows 10/11 x64 本地 Codex token 与 TPS 实时监控工具。
 
             本次更新：
-            - 额度页新增预计耗尽时间，可选参考时长，或直接在额度图上拖动选择时间段；释放鼠标后计算，支持手动输入与 Escape 取消。
-            - 耗尽预测按连续额度快照的实际百分点消耗速度计算，与积分价格和 token 容量估算独立；显示样本范围、数据时间及重置早于耗尽的提示。
-            - 后台始终发现归档日志，对话页新增“显示归档对话”筛选和归档标记；隐藏或归档对话不再移除速度趋势或额度估算样本。首次发现仍遵循 --days，选择更早图表范围会继续补读。
-            - 同一日志移入或移出归档目录时保留增量读取与历史补读进度，同一对话 ID 不重复累计；--include-archived 兼容为默认显示偏好。
-            - 速度图须先左键选中才能缩放，点击框外取消选中并保留比例；未选中时滚轮正常滚动页面，实时刷新保留选择，也支持键盘选择。
+            - 修复子代理日志中的继承父会话元数据覆盖当前身份，导致父对话显示成子代理模型、漏显用量或混入旧轮次的问题。
+            - 每份日志由首个有效 session_meta.id 确定归属，后续不同 ID 的元数据不再覆盖身份、父关联和代理名称。
+            - 继承历史从匹配本文件所属对话的 thread_settings_applied.thread_id 边界开始计量；受影响日志从头分批重建，界面仍遵循最近 N 轮范围。
+            - 重放时兼容并复用旧额度检查点，避免身份修正后重复累计；保留原始日志和额度历史。
+            - 同步更新中英文说明。已对照原始日志核对父对话、子代理和归档子代理的用量，并核对旧额度记录未重复新增。
 
             1. 下载下方 Assets 中的 `codex-tps-live-windows-amd64.zip`。
             2. 完整解压到任意目录。
@@ -47,11 +47,11 @@ jobs:
             Download `codex-tps-live-windows-amd64.zip`, extract all files, and double-click `启动监控.cmd` to open the local dashboard. Windows 10/11 x64 is supported; no Go, Node, Python, or internet connection is needed at runtime. English instructions are included in `Usage.en.md`.
 
             Changes in this release:
-            - Adds quota exhaustion forecasts from configurable lookback periods or a range dragged directly on the quota chart. Calculations commit on release; manual time entry and Escape cancellation are supported.
-            - Forecasts use actual percentage-point consumption within one continuous quota segment, independently of credit prices and token capacity. Sample bounds, report time, and resets occurring before exhaustion are shown.
-            - Always discovers archived logs, with a separate Show archived conversations filter and archive labels. Hiding or archiving conversations does not remove their speed trends or quota-estimation samples. Initial discovery still follows --days; older chart ranges request further backfill.
-            - Preserves incremental reading and backfill when the same log moves into or out of the archive directory, without adding matching conversation IDs twice. --include-archived now supplies the initial display preference.
-            - Requires chart selection before zooming. Clicking outside deselects without resetting the view; the wheel scrolls the page over unselected charts. Selection survives live refreshes and supports keyboard controls.
+            - Fixes inherited parent metadata in subagent logs replacing the log's identity, causing parent conversations to show a subagent model, omit usage, or include inherited turns.
+            - Establishes ownership from the first valid session_meta.id. Later metadata with a different ID cannot replace the conversation identity, parent link, or agent name.
+            - Counts requests after a thread_settings_applied.thread_id boundary explicitly matching the log's owner. Affected logs are replayed progressively from the beginning while the dashboard retains its selected N-turn window.
+            - Reuses existing quota checkpoints during replay to avoid counting usage twice under the corrected identity. Original logs and quota history are retained.
+            - Updates both language guides. Parent, subagent, and archived-subagent usage was checked against original logs, including verification that existing quota checkpoints were not duplicated.
 
             The standalone `codex-tps-live.exe` is also available; run it with `--open` to open the browser. The ZIP additionally includes the launcher, bilingual guides, and licenses. `SHA256SUMS` covers both downloads.
           files: |
