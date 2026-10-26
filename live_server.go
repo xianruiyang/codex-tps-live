@@ -24,7 +24,7 @@ import (
 //go:embed web/index.html web/trends.html web/quota.html
 var liveAssets embed.FS
 
-const liveVersion = "0.18.1"
+const liveVersion = "0.18.2"
 
 // RunLive starts a read-only, loopback-only dashboard. It never launches Codex,
 // reads credentials, makes outbound requests, or writes to the Codex home.
@@ -235,17 +235,18 @@ func safeLiveCSV(s string) string {
 func writeLiveCSV(stream io.Writer, id string, responses []liveResponse) {
 	w := csv.NewWriter(stream)
 	w.UseCRLF = true
-	_ = w.Write([]string{"session_id", "turn_id", "response_index", "turn_response_index", "model", "reasoning_effort", "started_at", "completed_at", "usage_recorded_at", "elapsed_seconds", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "visible_output_tokens", "effective_tps", "reasoning_tps", "visible_tps", "timing_note", "perceived_tps", "actual_tps", "ttft_seconds", "ttft_estimated", "ttft_source", "generation_seconds", "ttft_upper_bound", "transport", "transport_fallback", "transport_note", "transport_inferred", "actual_tps_min", "actual_tps_max", "actual_range", "generation_min_seconds", "generation_max_seconds"})
+	_ = w.Write([]string{"session_id", "turn_id", "response_index", "turn_response_index", "model", "reasoning_effort", "started_at", "completed_at", "usage_recorded_at", "elapsed_seconds", "input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "visible_output_tokens", "effective_tps", "reasoning_tps", "visible_tps", "timing_note", "perceived_tps", "actual_tps", "ttft_seconds", "ttft_estimated", "ttft_source", "generation_seconds", "ttft_upper_bound", "transport", "transport_fallback", "transport_note", "transport_inferred", "actual_tps_min", "actual_tps_max", "actual_range", "generation_min_seconds", "generation_max_seconds", "ttft_assumed", "ttft_note"})
 	for _, r := range responses {
 		seconds := ""
 		if r.Seconds > 0 {
 			seconds = fmt.Sprintf("%.6f", r.Seconds)
 		}
 		first, estimated, source := "", "", ""
-		upperBound := ""
+		upperBound, assumed, firstNote := "", "", ""
 		if r.TTFT != nil {
 			first, estimated, source = fmt.Sprintf("%.6f", r.TTFT.Seconds), strconv.FormatBool(r.TTFT.Estimated), r.TTFT.Source
 			upperBound = strconv.FormatBool(r.TTFT.UpperBound)
+			assumed, firstNote = strconv.FormatBool(r.TTFT.Assumed), r.TTFT.Note
 		}
 		generation := ""
 		generationMinimum, generationMaximum := "", ""
@@ -255,7 +256,7 @@ func writeLiveCSV(stream io.Writer, id string, responses []liveResponse) {
 		if r.GenerationSeconds > 0 {
 			generation = fmt.Sprintf("%.6f", r.GenerationSeconds)
 		}
-		_ = w.Write([]string{safeLiveCSV(id), safeLiveCSV(r.TurnID), strconv.Itoa(r.Index), strconv.Itoa(r.TurnIndex), safeLiveCSV(r.Model), safeLiveCSV(r.Effort), liveTime(r.StartedAt), liveTime(r.CompletedAt), liveTime(r.RecordedAt), seconds, strconv.FormatInt(r.Tokens.Input, 10), strconv.FormatInt(r.Tokens.Cached, 10), strconv.FormatInt(r.Tokens.CacheWrite, 10), strconv.FormatInt(r.Tokens.Output, 10), strconv.FormatInt(r.Tokens.Reasoning, 10), strconv.FormatInt(r.Tokens.Visible, 10), liveDecimal(r.TPS.Output), liveDecimal(r.TPS.Reasoning), liveDecimal(r.TPS.Visible), safeLiveCSV(r.TimingNote), liveDecimal(r.TPS.Perceived), liveDecimal(r.TPS.Actual), first, estimated, source, generation, upperBound, r.Transport, strconv.FormatBool(r.TransportFallback), safeLiveCSV(r.TransportNote), strconv.FormatBool(r.TransportInferred), liveDecimal(r.TPS.ActualMin), liveDecimal(r.TPS.ActualMax), strconv.FormatBool(r.TPS.ActualRange), generationMinimum, generationMaximum})
+		_ = w.Write([]string{safeLiveCSV(id), safeLiveCSV(r.TurnID), strconv.Itoa(r.Index), strconv.Itoa(r.TurnIndex), safeLiveCSV(r.Model), safeLiveCSV(r.Effort), liveTime(r.StartedAt), liveTime(r.CompletedAt), liveTime(r.RecordedAt), seconds, strconv.FormatInt(r.Tokens.Input, 10), strconv.FormatInt(r.Tokens.Cached, 10), strconv.FormatInt(r.Tokens.CacheWrite, 10), strconv.FormatInt(r.Tokens.Output, 10), strconv.FormatInt(r.Tokens.Reasoning, 10), strconv.FormatInt(r.Tokens.Visible, 10), liveDecimal(r.TPS.Output), liveDecimal(r.TPS.Reasoning), liveDecimal(r.TPS.Visible), safeLiveCSV(r.TimingNote), liveDecimal(r.TPS.Perceived), liveDecimal(r.TPS.Actual), first, estimated, source, generation, upperBound, r.Transport, strconv.FormatBool(r.TransportFallback), safeLiveCSV(r.TransportNote), strconv.FormatBool(r.TransportInferred), liveDecimal(r.TPS.ActualMin), liveDecimal(r.TPS.ActualMax), strconv.FormatBool(r.TPS.ActualRange), generationMinimum, generationMaximum, assumed, safeLiveCSV(firstNote)})
 	}
 	w.Flush()
 }

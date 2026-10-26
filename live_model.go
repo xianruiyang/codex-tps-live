@@ -52,6 +52,7 @@ type liveMetrics struct {
 	ActualSeconds        float64    `json:"actual_seconds"`
 	ActualResponses      int        `json:"actual_responses"`
 	EstimatedResponses   int        `json:"estimated_responses"`
+	AssumedResponses     int        `json:"assumed_responses"`
 	RangeResponses       int        `json:"range_responses"`
 	GenerationMinSeconds float64    `json:"generation_min_seconds"`
 	GenerationMaxSeconds float64    `json:"generation_max_seconds"`
@@ -81,6 +82,9 @@ func (m *liveMetrics) add(r liveResponse) {
 		if r.TTFT != nil && r.TTFT.Estimated {
 			m.EstimatedResponses++
 		}
+		if r.TTFT != nil && r.TTFT.Assumed {
+			m.AssumedResponses++
+		}
 	}
 }
 
@@ -94,6 +98,7 @@ func (m *liveMetrics) merge(other liveMetrics) {
 	m.ActualSeconds += other.ActualSeconds
 	m.ActualResponses += other.ActualResponses
 	m.EstimatedResponses += other.EstimatedResponses
+	m.AssumedResponses += other.AssumedResponses
 	m.RangeResponses += other.RangeResponses
 	m.GenerationMinSeconds += other.GenerationMinSeconds
 	m.GenerationMaxSeconds += other.GenerationMaxSeconds

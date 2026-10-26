@@ -19,11 +19,13 @@ import (
 // No exporter, proxy, Codex setting or request hook is installed. SQLite is opened
 // read-only, without a busy wait or a long-running read transaction.
 type liveFirstToken struct {
-	Seconds    float64 `json:"seconds"`
-	Source     string  `json:"source"`
-	Estimated  bool    `json:"estimated"`
-	UpperBound bool    `json:"upper_bound"`
-	Note       string  `json:"note"`
+	Seconds   float64 `json:"seconds"`
+	Source    string  `json:"source"`
+	Estimated bool    `json:"estimated"`
+	Assumed   bool    `json:"assumed"`
+	// Retained for API/CSV compatibility; the upper-bound fallback is retired.
+	UpperBound bool   `json:"upper_bound"`
+	Note       string `json:"note"`
 }
 
 type liveTimingEvent struct {
@@ -237,19 +239,13 @@ func timingRange(events []liveTimingEvent, start, end time.Time) []liveTimingEve
 func (m *liveMonitor) enrichTiming(s *liveSession, turn *liveTurn, r *liveResponse) {
 	m.fillTransport(s, turn, r)
 	r.TPS.Perceived = r.TPS.Output
-	if r.Seconds <= 0 {
+	if r.TTFT != nil && !r.TTFT.Estimated && r.applyFirstToken() {
 		return
 	}
-	r.setActualBounds(0, r.Seconds)
-	if r.StartedAt.IsZero() || r.CompletedAt.IsZero() {
+	if r.StartedAt.IsZero() || r.CompletedAt.IsZero() || r.Seconds <= 0 {
+		r.assumeFirstOnly(turn, "响应时间边界不完整。")
 		return
 	}
-	if r.TTFT != nil && !r.TTFT.Estimated {
-		r.applyFirstToken()
-		return
-	}
-	// A native *turn* metric has a different origin; it is retained on the turn,
-	// never copied to each model request or subtracted from its response duration.
 	var requests []liveTimingEvent
 	for _, e := range timingRange(m.timings.threads[s.ID], r.StartedAt, r.CompletedAt) {
 		if e.kind == "compressed" && (e.turn == "" || e.turn == turn.ID) {
@@ -257,10 +253,7 @@ func (m *liveMonitor) enrichTiming(s *liveSession, turn *liveTurn, r *liveRespon
 		}
 	}
 	if len(requests) == 0 {
-		if !r.FirstOutputAt.IsZero() && !r.FirstOutputAt.Before(r.StartedAt) {
-			r.TTFT = &liveFirstToken{Seconds: r.FirstOutputAt.Sub(r.StartedAt).Seconds(), Source: "first_output_item", Estimated: true, UpperBound: true, Note: "未记录可归属的 HTTP 压缩日志（例如 WebSocket 路径）；响应开始→首个已落盘输出项，仅为首 Token 等待上界。根据等待的 0–上界计算实际 TPS 范围，不把上界当作单值 TTFT。"}
-			r.applyFirstToken()
-		}
+		r.assumeFirstOnly(turn, "未记录可归属的逐次首 Token 或 HTTP 压缩计时。")
 		return
 	}
 	first := requests[0]
@@ -300,6 +293,35 @@ func (m *liveMonitor) enrichTiming(s *liveSession, turn *liveTurn, r *liveRespon
 		return
 	}
 	r.TTFT = &value
+	if !r.applyFirstToken() {
+		r.assumeFirstOnly(turn, "HTTP 日志估值与本次响应时间不一致，未将其用于扣除等待。")
+	}
+}
+
+// The user's provisional policy: keep attributable request timings; otherwise
+// use the native turn TTFT only for its first response and assume zero later.
+// The native clock starts at task launch, so wall-clock log offsets can only
+// approximate its conversion to the first response's duration origin.
+func (r *liveResponse) assumeFirstOnly(turn *liveTurn, reason string) {
+	first := len(turn.Responses) > 0 && r.Index == turn.Responses[0].Index
+	if first && turn.TimeToFirstTokenMS != nil && *turn.TimeToFirstTokenMS >= 0 && !turn.StartedAt.IsZero() && !r.StartedAt.IsZero() {
+		offset := max(0, r.StartedAt.Sub(turn.StartedAt).Seconds())
+		wait := max(0, float64(*turn.TimeToFirstTokenMS)/1000-offset)
+		if r.Seconds > wait {
+			r.TTFT = &liveFirstToken{Seconds: wait, Source: "turn_first_token", Estimated: true, Note: reason + "按每轮仅首次计入 TTFT 的约定，使用轮次原生 TTFT 并扣除任务开始至首响应开始的日志时间差近似换算；原生计时从任务启动开始，此值不是逐请求实测。"}
+			r.applyFirstToken()
+			return
+		}
+		reason += "轮次原生 TTFT 无法与首响应耗时一致换算。"
+	}
+	source, note := "subsequent_assumed_zero", "按每轮仅首次计入 TTFT 的临时约定，后续响应暂按 0；并非实测为零，实际 TPS 据此估算并等于可见 TPS。"
+	if first {
+		source, note = "first_missing_assumed_zero", "首次响应缺少可用首 Token 计时，暂按 0 估算；并非实测为零。"
+		if turn.Status == "active" {
+			source, note = "first_pending_assumed_zero", "首次响应的轮次原生 TTFT 尚未上报，暂按 0 估算；轮次完成并上报后自动更新。"
+		}
+	}
+	r.TTFT = &liveFirstToken{Source: source, Estimated: true, Assumed: true, Note: reason + note}
 	r.applyFirstToken()
 }
 
@@ -355,40 +377,28 @@ func (m *liveMonitor) fillTransport(s *liveSession, turn *liveTurn, r *liveRespo
 	}
 }
 
-func (r *liveResponse) applyFirstToken() {
-	if r.TTFT.UpperBound {
-		r.setActualBounds(max(0, r.Seconds-r.TTFT.Seconds), r.Seconds)
-		return
-	}
-	if r.TTFT.Estimated && !r.FirstOutputAt.IsZero() {
+func (r *liveResponse) applyFirstToken() bool {
+	if r.TTFT.Source == "request_headers" || r.TTFT.Source == "request_headers_temporal" {
 		upper := r.FirstOutputAt.Sub(r.StartedAt).Seconds()
-		if r.TTFT.Seconds > upper+.001 {
-			r.TTFT = &liveFirstToken{Seconds: upper, Source: "first_output_item", Estimated: true, UpperBound: true, Note: "HTTP 日志间隔超过首个已落盘输出项的等待时间，不能当作逐次 TTFT 单值；改用首输出项上界计算实际 TPS 范围。"}
-			r.setActualBounds(max(0, r.Seconds-upper), r.Seconds)
-			return
+		if !r.FirstOutputAt.IsZero() && r.TTFT.Seconds > upper+.001 {
+			return false
 		}
 	}
 	r.GenerationSeconds = r.Seconds - r.TTFT.Seconds
 	if r.GenerationSeconds <= 0 {
 		r.GenerationSeconds = 0
-		return
+		return false
 	}
 	r.TPS.Actual = ratio(float64(r.Tokens.Output), r.GenerationSeconds)
 	r.TPS.ActualEstimated = r.TTFT.Estimated
 	r.TPS.ActualRange = false
 	r.GenerationMinSeconds, r.GenerationMaxSeconds = r.GenerationSeconds, r.GenerationSeconds
-	if r.TTFT.Estimated {
-		r.GenerationMinSeconds = 0
-		if !r.FirstOutputAt.IsZero() {
-			r.GenerationMinSeconds = max(0, r.Seconds-max(r.TTFT.Seconds, r.FirstOutputAt.Sub(r.StartedAt).Seconds()))
-		}
-	}
 	r.TPS.ActualMin = ratio(float64(r.Tokens.Output), r.GenerationMaxSeconds)
 	r.TPS.ActualMax = ratio(float64(r.Tokens.Output), r.GenerationMinSeconds)
 	if r.TTFT.Source == "request_preparation" {
-		r.TPS.Actual, r.TPS.ActualRange = nil, true
-		r.GenerationSeconds = 0
+		r.setActualBounds(0, r.GenerationSeconds)
 	}
+	return true
 }
 
 func (r *liveResponse) setActualBounds(minimum, maximum float64) {
