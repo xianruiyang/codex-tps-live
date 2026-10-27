@@ -21,10 +21,10 @@ import (
 	"time"
 )
 
-//go:embed web/index.html web/trends.html web/quota.html web/nodes.html web/node_plans.html
+//go:embed web/index.html web/trends.html web/quota.html web/nodes.html web/node_plans.html web/ws_diagnostics.html
 var liveAssets embed.FS
 
-const liveVersion = "0.20.2"
+const liveVersion = "0.20.3"
 
 // RunLive starts a loopback-only dashboard. Codex logs remain read-only. Only
 // authorized node tests and their saved continuations make outbound probes.
@@ -98,6 +98,19 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	mux := http.NewServeMux()
 	nodes.register(mux)
 	plans.register(mux)
+	mux.HandleFunc("/ws-diagnostics", func(w http.ResponseWriter, r *http.Request) {
+		page, _ := liveAssets.ReadFile("web/ws_diagnostics.html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(page)
+	})
+	mux.HandleFunc("/api/ws-diagnostics", func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := liveTrendRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeLiveJSON(w, monitor.websocketDiagnostics(from, to, r.URL.Query().Get("kind"), r.URL.Query().Get("thread"), r.URL.Query().Get("q"), r.URL.Query().Get("before"), queryInt(r, "limit", 100, 200)))
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

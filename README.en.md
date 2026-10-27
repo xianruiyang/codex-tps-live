@@ -100,6 +100,14 @@ Refresh only reads local subscription files, never subscription URLs. YAML `prox
 
 Codex HTTP GETs the model list; WebSocket GETs the responses Upgrade endpoint. Neither sends credentials or generation events. A JSON 401 means the authentication boundary was reached; only 101 indicates an accepted upgrade. These do not verify authenticated inference or persistent stream stability. Cards separately show medians, counts and failures, with per-round details. CSV gives native Clash delay its own column instead of recording it as first-response latency. Codex latency includes setup and TLS and is not model TTFT or TPS. Paths differ, so differences cannot be attributed to protocol alone. Short samples do not establish long-term stability.
 
+## WebSocket diagnostics
+
+Choose **WebSocket 诊断** in the top navigation to open `/ws-diagnostics`. It reads existing local Codex client logs for connection failures, TLS/certificate errors, timeouts, disconnects, retries and HTTP fallback. Neither optional timing capture nor a Codex restart is required. Each entry shows its concrete redacted error, timestamp and recorded conversation association. Expand it for the source, severity and turn metadata. HTTP status and WebSocket close codes appear only when explicitly logged; nearby timestamps are not used to guess causes or request associations.
+
+The page defaults to the latest 24 hours, newest first, with time, event, conversation and keyword filters. It refreshes every five seconds, preserves expanded details and scrolls records under a fixed heading. Loading older entries appends up to 100 at a time and pauses automatic refresh; Refresh and return to latest resumes it. History backfill, unavailable logs and no matching errors have distinct states. Memory retains at most the latest 4,000 redacted diagnostics. A restart reloads logs still retained by Codex; raw error messages are not persisted separately, and deleted or unlogged errors cannot be recovered.
+
+Counts represent log events, not failed requests: one failure may produce multiple entries. Collector health is separate, showing parsing, unknown-schema and write errors without adding them to WebSocket transport errors. Request/response bodies and header maps are omitted, while keys, URL paths and query parameters are redacted. The page and its data are processed locally.
+
 ## Optional WebSocket server diagnostics (experimental)
 
 This is not a validated client per-request TTFT collector. Engine timings and logical-turn cumulative values have different boundaries from client first-content waiting. Even fields named `ttft` are never mapped to client TTFT, subtracted from response duration, used for actual TPS, or used to infer a response's transport from a time-window match. Existing HTTP estimates and the first-only/assumed-zero policy remain in place.
@@ -187,7 +195,7 @@ Cumulative checkpoints provide deduplication; repeated checkpoints are not count
 | --- | --- |
 | `cmd/codex-tps-live/` | Live-monitor entry point |
 | `live_*.go` | Log statistics, quota estimates, node tests, plan recovery and local HTTP service |
-| `web/` | Embedded conversation, speed, quota, instant-test and plan/stability pages |
+| `web/` | Embedded conversation, speed, quota, node-test, plan/stability and WebSocket diagnostics pages |
 | `build-portable.ps1` | Build and package the Windows x64 executable |
 | `scripts/package-portable.ps1` | Reuse the existing executable to update guides, licenses, and ZIP |
 | `README.md` / `README.en.md` | Chinese / English live-monitor guide |

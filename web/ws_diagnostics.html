@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebSocket 诊断 · Codex TPS Live</title>
+<style>
+:root{color-scheme:dark;--bg:#101317;--panel:#171c22;--raised:#202730;--border:#35404d;--text:#ecf1f6;--muted:#aebac8;--accent:#79d8bd;--accent-bg:#203d35;--warn:#f7ca85;--bad:#ffaaa0}:root.light{color-scheme:light;--bg:#f3f5f8;--panel:#fff;--raised:#eaf0f5;--border:#c8d2dd;--text:#182532;--muted:#526477;--accent:#17634f;--accent-bg:#dcf3e9;--warn:#805000;--bad:#ae3028}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}button,select,input{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--border);border-radius:8px;min-height:38px;padding:7px 10px;max-width:100%}button,summary{cursor:pointer}button:hover{background:var(--raised)}button:disabled{opacity:.45;cursor:default}:focus-visible{outline:3px solid var(--accent);outline-offset:3px}header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--border);padding:17px 26px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}h1{font-size:20px;margin:0}h1 span{color:var(--accent)}.subtitle,.muted{color:var(--muted);font-size:12px}.page-nav{display:flex;gap:6px;flex-wrap:wrap}.page-nav a{display:inline-flex;align-items:center;min-height:38px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;color:var(--muted);text-decoration:none}.page-nav a:hover{background:var(--raised);color:var(--text)}.page-nav a[aria-current=page]{color:var(--accent);border-color:var(--accent);background:var(--accent-bg);font-weight:600}#theme{margin-left:auto}main{max-width:1500px;margin:auto;padding:20px 26px 35px;min-width:0}.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 18px}.filters{display:flex;align-items:end;gap:12px;flex-wrap:wrap}.filters label{display:grid;gap:5px;font-size:12px;color:var(--muted)}#thread{width:280px}#query{width:260px}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.primary{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}.summary{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0}.stat{flex:1;min-width:160px;padding:14px 18px;background:var(--panel);border:1px solid var(--border);border-radius:10px}.stat strong{display:block;font-size:25px;font-variant-numeric:tabular-nums;margin-top:3px}.stat span{color:var(--muted);font-size:12px}.list-panel{padding:0;overflow:hidden}.list-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--raised);flex-wrap:wrap}.list-head h2{font-size:15px;margin:0}.records{max-height:65vh;overflow:auto;scrollbar-gutter:stable;overscroll-behavior:contain}.record{padding:16px 18px;border-bottom:1px solid var(--border);overflow-wrap:anywhere}.record:last-child{border-bottom:0}.record-top{display:flex;align-items:center;gap:9px 12px;flex-wrap:wrap}.record-top strong{font-size:14px}.record-top time{margin-left:auto;color:var(--muted);font:12px Consolas,monospace;white-space:nowrap}.badge{font-size:11px;border:1px solid var(--border);border-radius:5px;padding:2px 7px;color:var(--warn)}.badge.error{color:var(--bad)}.context{color:var(--muted);font-size:12px;margin-top:7px;line-height:1.7}.message{font:12px/1.7 Consolas,"Microsoft YaHei",monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:9px 0 0;padding:10px 12px;background:var(--bg);border-radius:6px}.record summary{font-size:12px;color:var(--muted);min-height:32px;padding:7px 0 0}.metadata{display:grid;grid-template-columns:100px minmax(0,1fr);gap:5px 12px;font-size:12px;margin:10px 0 0}.metadata dt{color:var(--muted)}.metadata dd{margin:0;overflow-wrap:anywhere}.empty{padding:46px 18px;color:var(--muted);text-align:center}.list-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border);flex-wrap:wrap}.notice{min-height:42px;padding:10px 0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}#error{color:var(--warn);margin:8px 0 0;min-height:18px;font-size:12px}details.panel{margin-top:16px}details.panel>summary{font-weight:600;min-height:30px}details.panel p{color:var(--muted);font-size:12px;margin:8px 0}.capture-grid{display:flex;gap:8px 22px;flex-wrap:wrap;font-size:12px;color:var(--muted)}.capture-grid strong{color:var(--text);font-variant-numeric:tabular-nums}.source-note{font-size:12px;color:var(--muted);margin:12px 2px 0;max-width:1100px}@media(max-width:1150px){.page-nav{order:3;width:100%}#theme{margin-left:auto}}@media(max-width:600px){header{padding:12px 14px;gap:9px}h1{font-size:18px}.page-nav a{font-size:12px;padding:6px 8px;min-height:35px}main{padding:14px 10px 25px}.panel{padding:13px}.filters label{flex:1;min-width:130px}.filters label.search{flex-basis:100%}#thread,#query{width:100%}.stat{min-width:90px;padding:10px 12px}.stat strong{font-size:22px}.summary{gap:7px}.record{padding:13px}.record-top time{width:100%;margin-left:0}.list-panel{padding:0}.list-head,.list-foot{padding:12px 13px}.records{max-height:65vh}.metadata{grid-template-columns:80px minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<header><div><h1>Codex <span>TPS Live</span> · WebSocket 诊断</h1><div class="subtitle">本地客户端日志 · 具体错误、重试与 HTTP 回退</div></div><nav class="page-nav" aria-label="主导航"><a href="/">对话明细</a><a href="/trends">速度趋势</a><a href="/quota">额度趋势</a><a href="/nodes">节点测速</a><a href="/ws-diagnostics" aria-current="page">WebSocket 诊断</a></nav><button id="theme" type="button">浅色主题</button></header>
+<main>
+<form id="filters" class="panel">
+<div class="filters">
+<label>时间范围<select id="hours"><option value="1">最近 1 小时</option><option value="6">最近 6 小时</option><option value="12">最近 12 小时</option><option value="24" selected>最近 24 小时</option><option value="168">最近 7 天</option></select></label>
+<label>事件类型<select id="kind"><option value="">全部事件</option><option value="tls">TLS / 证书错误</option><option value="connect">连接失败</option><option value="timeout">超时</option><option value="disconnected">连接断开</option><option value="retry">重试 / 重连</option><option value="http_fallback">HTTP 回退</option><option value="other">其他异常</option></select></label>
+<label>关联对话<select id="thread"><option value="">全部对话</option></select></label>
+<label class="search">搜索错误或对话<input id="query" type="search" placeholder="例如 tls、EOF、对话标题" autocomplete="off"></label>
+<div class="actions"><button class="primary" type="submit">应用筛选</button><button id="refresh" type="button">刷新并返回最新</button><button id="pause" type="button" aria-pressed="false">暂停刷新</button></div>
+</div><div id="error" role="status"></div>
+</form>
+<div class="summary" aria-label="当前筛选范围内的事件数"><div class="stat"><span>错误记录</span><strong id="errors">—</strong></div><div class="stat"><span>HTTP 回退记录</span><strong id="fallbacks">—</strong></div><div class="stat"><span>重试 / 重连记录</span><strong id="retries">—</strong></div></div>
+<div id="status" class="notice" role="status">正在读取本地日志…</div>
+<section class="panel list-panel" aria-label="WebSocket 诊断记录"><div class="list-head"><h2>诊断记录 · 最新在前</h2><span id="recordCount" class="muted"></span></div><div id="records" class="records"><div class="empty">正在读取…</div></div><div class="list-foot"><span id="paging" class="muted">每次加载最多 100 条</span><button id="older" type="button" disabled>加载更早记录</button></div></section>
+<p class="source-note">只读 Codex 已记录的本地客户端日志，不需要启用计时采集或重启 Codex。这里统计的是日志事件，并非失败请求数；同一次故障可能产生错误、重试和回退等多条记录。没有关联信息时保留“未记录”，不按时间猜测所属请求。日志未保留的错误无法补回。</p>
+<details class="panel"><summary>采集器自身状态（与 WebSocket 传输错误分开）</summary><p id="captureMessage">正在读取…</p><div id="capture" class="capture-grid"></div><p>这些计数用于排查可选采集器的解析、队列与写盘问题，不计入上方错误记录，也不代表客户端 TTFT。未开启采集器仍可查看上方已记录的 WebSocket 错误。</p></details>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+let light=false;try{light=localStorage.getItem('codex-tps-live-theme')==='light';}catch{}
+function theme(){document.documentElement.classList.toggle('light',light);$('theme').textContent=light?'深色主题':'浅色主题';}theme();$('theme').onclick=()=>{light=!light;theme();try{localStorage.setItem('codex-tps-live-theme',light?'light':'dark');}catch{}};
+const state={filters:null,rows:[],next:'',paused:false,busy:false,historical:false,to:null,from:null,generation:0,signature:'',threadSignature:'',total:0};
+const typeNames={tls:'TLS 错误',connect:'连接失败',timeout:'超时',disconnected:'连接断开',retry:'重试 / 重连',http_fallback:'HTTP 回退',other:'其他异常'};
+function short(value){return value?value.slice(0,8):'未记录';}
+function localTime(value){const d=new Date(value);return Number.isNaN(+d)?value:d.toLocaleString('zh-CN',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0');}
+function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
+function pause(value){state.paused=value;$('pause').textContent=value?'恢复刷新':'暂停刷新';$('pause').setAttribute('aria-pressed',String(value));}
+function apply(){state.filters={hours:Number($('hours').value),kind:$('kind').value,thread:$('thread').value,q:$('query').value.trim()};state.generation++;state.historical=false;state.to=null;state.next='';state.rows=[];state.signature='';pause(false);load(false,true);}
+function renderRows(){
+ const signature=JSON.stringify([state.rows,state.rows.length?null:[state.pending,state.unavailable,state.readError]]);if(signature===state.signature)return;state.signature=signature;
+ const open=new Set([...$('records').querySelectorAll('details[open]')].map(n=>n.dataset.id));
+ const fragment=document.createDocumentFragment();
+ for(const row of state.rows){
+  const card=el('article','record'),top=el('div','record-top');
+  top.append(el('span','badge'+(row.kind==='retry'||row.kind==='http_fallback'?'':' error'),typeNames[row.kind]||'异常'),el('strong','',row.reason));
+  const date=el('time','',localTime(row.at));date.dateTime=row.at;top.append(date);card.append(top);
+  const context=[row.title||('对话 '+short(row.thread_id))];if(row.turn_id)context.push('轮次 '+short(row.turn_id));if(row.status)context.push('HTTP '+row.status);if(row.close_code)context.push('关闭码 '+row.close_code);
+  card.append(el('div','context',context.join(' · ')),el('pre','message',row.message||row.reason));
+  const details=el('details'),summary=el('summary','','记录详情'+(row.truncated?' · 内容已截断':''));details.dataset.id=row.id;details.open=open.has(row.id);details.append(summary);
+  const metadata=el('dl','metadata');for(const [name,value] of [['日志级别',row.level],['日志来源',row.target],['对话 ID',row.thread_id],['轮次 ID',row.turn_id],['进程标识',row.process_id]])metadata.append(el('dt','',name),el('dd','',value||'未记录'));
+  details.append(metadata);card.append(details);fragment.append(card);
+ }
+ if(!state.rows.length)fragment.append(el('div','empty',state.pending?'历史补读中，尚未找到匹配记录。':state.unavailable?'未找到可读取的 Codex 本地日志。':state.readError?'日志读取暂不可用，请查看上方提示。':'此筛选范围内暂无已记录的 WebSocket 异常。'));
+ $('records').replaceChildren(fragment);
+}
+function renderCapture(c={}){
+ $('captureMessage').textContent=c.message||'可选采集器未运行。';
+ const fragment=document.createDocumentFragment();for(const [label,key] of [['观察事件','events'],['已保存','written'],['JSON 解析失败','malformed'],['未知结构','unknown_schema'],['关联信息缺失','incomplete_context'],['写盘错误','write_errors'],['丢块','dropped_chunks'],['超长行','oversize_lines']]){const span=el('span','',label+' ');span.append(el('strong','',String(c[key]||0)));fragment.append(span);}if(c.flush_incomplete)fragment.append(el('span','','上次退出未完成写入'));$('capture').replaceChildren(fragment);
+}
+async function load(older=false,force=false){
+ if(state.busy){if(force)state.queued=true;return;}if(!force&&!older&&state.paused)return;
+ state.busy=true;$('older').disabled=true;const generation=state.generation;
+ try{
+  if(!older){state.to=new Date().toISOString();state.from=new Date(Date.parse(state.to)-state.filters.hours*3600000).toISOString();}
+  const params=new URLSearchParams({from:state.from,to:state.to,kind:state.filters.kind,thread:state.filters.thread,q:state.filters.q,limit:'100'});if(older)params.set('before',state.next);
+  const response=await fetch('/api/ws-diagnostics?'+params,{cache:'no-store'});if(!response.ok)throw new Error('读取失败（HTTP '+response.status+'）');const data=await response.json();if(generation!==state.generation)return;
+  state.pending=data.pending;state.unavailable=data.unavailable;state.readError=data.read_error;state.total=data.total;
+  if(data.cursor_expired){state.next='';$('error').textContent='记录范围已变化，请点击“刷新并返回最新”。';return;}
+  state.rows=older?[...new Map([...state.rows,...data.rows].map(row=>[row.id,row])).values()]:data.rows;state.next=data.next_before||'';
+  $('errors').textContent=String(data.errors);$('fallbacks').textContent=String(data.fallbacks);$('retries').textContent=String(data.retries);
+  const notes=[state.paused?'自动刷新已暂停':'每 5 秒刷新',data.unavailable?'未找到可读取的 Codex 日志':data.read_error?'本地日志读取暂不可用':data.pending?'历史补读中，记录仍在补齐':'当前日志范围已读完'];if(data.trimmed)notes.push('内存保留最近 4,000 条诊断，较早记录可能不完整');if(state.historical)notes.push('正在浏览较早记录');
+  $('status').textContent=notes.join(' · ');$('error').textContent=data.read_error?'本地日志读取暂不可用：'+data.read_error:'';
+  const threadValue=$('thread').value,threadSignature=JSON.stringify([data.threads,threadValue]);if(threadSignature!==state.threadSignature){const fragment=document.createDocumentFragment(),all=el('option','','全部对话');all.value='';fragment.append(all);for(const item of data.threads){const option=el('option','',(item.title||'未命名对话')+' · '+short(item.id));option.value=item.id;fragment.append(option);}if(threadValue&&!data.threads.some(t=>t.id===threadValue)){const option=el('option','','当前对话 · '+short(threadValue));option.value=threadValue;fragment.append(option);}$('thread').replaceChildren(fragment);$('thread').value=threadValue;state.threadSignature=threadSignature;}
+  renderRows();renderCapture(data.capture);$('recordCount').textContent='已显示 '+state.rows.length+' / '+data.total+' 条';$('paging').textContent=state.next?'每次加载最多 100 条；加载更早记录会暂停自动刷新':'当前匹配记录已显示完毕';
+ }catch(error){if(generation===state.generation)$('error').textContent=error.message;}
+ finally{state.busy=false;$('older').disabled=!state.next;if(state.queued){state.queued=false;load(false,true);}}
+}
+$('filters').onsubmit=event=>{event.preventDefault();apply();};$('refresh').onclick=apply;$('pause').onclick=()=>{pause(!state.paused);if(!state.paused){state.historical=false;load(false,true);}else $('status').textContent='自动刷新已暂停；已显示的记录保留。';};
+$('older').onclick=()=>{if(!state.next)return;state.historical=true;pause(true);load(true,true);};
+apply();setInterval(()=>{if(!document.hidden)load();},5000);
+</script>
+</body></html>

@@ -153,26 +153,29 @@ func (f *liveFile) read() error {
 }
 
 type liveMonitor struct {
-	mu             sync.RWMutex
-	home           string
-	days           int
-	showArchived   bool
-	interval       time.Duration
-	files          map[string]*liveFile
-	errors         []string
-	updated        time.Time
-	discovered     time.Time
-	trendSince     time.Time
-	trendViews     map[string]liveTrendRequest
-	quota          *liveQuotaHistory
-	names          liveSessionNames
-	timingReader   *liveTimingReader
-	timings        liveTimingIndex
-	timingError    string
-	captureReader  *liveCaptureReader
-	captureStatus  liveCaptureStatus
-	captureRecords map[string]liveCapturedTiming
-	transportCache *liveTransportCache
+	mu                   sync.RWMutex
+	home                 string
+	days                 int
+	showArchived         bool
+	interval             time.Duration
+	files                map[string]*liveFile
+	errors               []string
+	updated              time.Time
+	discovered           time.Time
+	trendSince           time.Time
+	trendViews           map[string]liveTrendRequest
+	quota                *liveQuotaHistory
+	names                liveSessionNames
+	timingReader         *liveTimingReader
+	timings              liveTimingIndex
+	timingError          string
+	captureReader        *liveCaptureReader
+	captureStatus        liveCaptureStatus
+	captureRecords       map[string]liveCapturedTiming
+	transportCache       *liveTransportCache
+	wsDiagnostics        map[string]liveWSDiagnostic
+	wsDiagnosticSince    time.Time
+	wsDiagnosticsTrimmed bool
 }
 
 func newLiveMonitor(home string, days int, showArchived bool, interval time.Duration) *liveMonitor {

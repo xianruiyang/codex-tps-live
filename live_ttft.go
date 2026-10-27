@@ -34,6 +34,7 @@ type liveTimingEvent struct {
 	process, thread, turn, kind string
 	status                      int
 	cached                      bool
+	diagnostic                  *liveWSDiagnostic
 }
 
 type liveTimingReader struct {
@@ -117,7 +118,7 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 			r.latest = 0
 		}
 	}
-	const fields = `SELECT id,ts,ts_nanos,coalesce(process_uuid,''),coalesce(thread_id,''),target,substr(coalesce(feedback_log_body,''),1,8192) FROM logs WHERE target IN ('codex_http_client::request','codex_http_client::client','codex_api::endpoint::responses_websocket','feedback_tags','codex_core::client','codex_api::sse::responses') AND ts >= ?`
+	const fields = `SELECT id,ts,ts_nanos,coalesce(process_uuid,''),coalesce(thread_id,''),target,coalesce(level,''),substr(coalesce(feedback_log_body,''),1,8192) FROM logs WHERE (target IN ('codex_http_client::request','codex_http_client::client','codex_api::endpoint::responses_websocket','feedback_tags','codex_core::client','codex_api::sse::responses') OR (target='codex_core::codex' AND level IN ('WARN','ERROR'))) AND ts >= ?`
 	query, args := "", []any{since.Unix()}
 	forward := r.latest > 0 && maximum > r.latest
 	if forward && r.backfillNext && !r.historyDone && r.oldest > 0 {
@@ -148,8 +149,8 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 	for rows.Next() {
 		var event liveTimingEvent
 		var seconds, nanos int64
-		var target, body string
-		if err := rows.Scan(&event.id, &seconds, &nanos, &event.process, &event.thread, &target, &body); err != nil {
+		var target, level, body string
+		if err := rows.Scan(&event.id, &seconds, &nanos, &event.process, &event.thread, &target, &level, &body); err != nil {
 			return nil, err
 		}
 		count++
@@ -190,8 +191,9 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 			// Endpoint/handshake messages alone do not confirm request transport.
 			event.kind = "websocket_connection"
 		}
+		event.diagnostic = parseWSDiagnostic(event, target, level, body)
 		// Raw log bodies (including HTTP headers) never enter the API or cache.
-		if event.kind != "" {
+		if event.kind != "" || event.diagnostic != nil {
 			result = append(result, event)
 		}
 	}
@@ -234,6 +236,10 @@ func (x *liveTimingIndex) add(events []liveTimingEvent) {
 		x.events = map[string]liveTimingEvent{}
 	}
 	for _, e := range events {
+		if e.kind == "" {
+			continue
+		}
+		e.diagnostic = nil
 		x.events[timingEventKey(e)] = e
 	}
 	x.threads, x.headers = map[string][]liveTimingEvent{}, map[string][]liveTimingEvent{}
@@ -407,6 +413,9 @@ func (m *liveMonitor) pollTiming(now time.Time) {
 	if !m.trendSince.IsZero() && m.trendSince.Before(since) {
 		since = m.trendSince
 	}
+	if !m.wsDiagnosticSince.IsZero() && m.wsDiagnosticSince.Before(since) {
+		since = m.wsDiagnosticSince
+	}
 	m.mu.RUnlock()
 	if m.timingReader == nil {
 		m.timingReader = &liveTimingReader{path: filepath.Join(m.home, "logs_2.sqlite")}
@@ -439,6 +448,7 @@ func (m *liveMonitor) pollTiming(now time.Time) {
 	}
 	m.timings.add(retained)
 	m.timings.add(events)
+	m.addWSDiagnostics(events)
 	m.timings.pending = !m.timingReader.historyDone && !m.timingReader.missing
 	m.timings.unavailable = m.timingReader.missing
 }
