@@ -25,6 +25,8 @@ var errCaptureNotRunning = errors.New("未检测到正在运行的 Codex")
 type captureConfig struct {
 	CodexCLI       string `json:"codex_cli"`
 	CodexApp       string `json:"codex_app"`
+	PackageFamily  string `json:"package_family,omitempty"`
+	PackageAppID   string `json:"package_app_id,omitempty"`
 	CodexHome      string `json:"codex_home"`
 	Enabled        bool   `json:"enabled"`
 	PreviousSaved  bool   `json:"previous_saved"`
@@ -239,50 +241,42 @@ func launchCapture() error {
 	}
 	cfg, err := discoverInstalledCapture(true)
 	if err != nil {
+		writeCaptureLaunch("discovery_failed", 0, err)
 		return err
 	}
 	// Read-only compatibility check before launching the desktop.
 	if _, err = readRuntimeFeature(cfg); err != nil {
+		writeCaptureLaunch("feature_check_failed", 0, err)
 		return err
 	}
 	if err = savePreparedCapture(cfg); err != nil {
-		return err
-	}
-	self, err := os.Executable()
-	if err != nil {
+		writeCaptureLaunch("preparation_failed", 0, err)
 		return err
 	}
 	launchID := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
-	cmd := exec.Command(cfg.CodexApp)
-	cmd.Dir = filepath.Dir(cfg.CodexApp)
-	for _, env := range os.Environ() {
-		key, _, _ := strings.Cut(env, "=")
-		if !strings.EqualFold(key, "RUST_LOG") && !strings.EqualFold(key, "CODEX_CLI_PATH") && !strings.EqualFold(key, "CODEX_TPS_ORIGINAL_CLI") && !strings.EqualFold(key, "CODEX_TPS_CAPTURE_LAUNCH_ID") {
-			cmd.Env = append(cmd.Env, env)
-		}
-	}
-	filter := strings.TrimSpace(os.Getenv("RUST_LOG"))
-	if filter == "" {
-		filter = "warn"
-	}
-	cmd.Env = append(cmd.Env, "RUST_LOG="+filter+","+captureTarget+"=trace", "CODEX_CLI_PATH="+self, "CODEX_TPS_ORIGINAL_CLI="+cfg.CodexCLI, "CODEX_TPS_CAPTURE_LAUNCH_ID="+launchID)
-	if err = cmd.Start(); err != nil {
+	started, err := capturePackageDesktop(cfg, launchID, false)
+	if err != nil {
+		writeCaptureLaunch("package_launch_failed", 0, err)
 		return err
 	}
-	_ = cmd.Process.Release()
+	writeCaptureLaunch("desktop_started", started.PID, nil)
+	fmt.Printf("已通过 Windows 应用包身份创建桌面进程（PID %d）；正在等待采集后端接通。\n", started.PID)
 	dir, err := captureDir()
 	if err != nil {
 		return err
 	}
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
 		var state captureRunState
 		if data, readErr := os.ReadFile(filepath.Join(dir, "active.json")); readErr == nil && json.Unmarshal(data, &state) == nil && state.LaunchID == launchID && captureStateAlive(state) {
+			writeCaptureLaunch("backend_connected", started.PID, nil)
 			fmt.Println("已确认采集器与原版后端启动；尚未证明收到服务端计时，更不代表已测得客户端逐次 TTFT。")
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return errors.New("已尝试启动桌面程序，但 5 秒内未确认采集后端接通；未结束 Codex，也未修改其持久配置。可稍后查询采集状态")
+	err = errors.New("桌面进程已创建，但 15 秒内未确认采集后端接通；这不是启动权限错误。未结束 Codex，也未修改其持久配置，可稍后查询采集状态")
+	writeCaptureLaunch("backend_pending", started.PID, err)
+	return err
 }
 
 func disableCapture() error {
@@ -310,6 +304,23 @@ func captureStatus() error {
 	dir, err := captureDir()
 	if err != nil {
 		return err
+	}
+	var launch struct {
+		At    time.Time `json:"at"`
+		Stage string    `json:"stage"`
+		PID   int       `json:"desktop_pid"`
+		Error string    `json:"error"`
+	}
+	if data, readErr := os.ReadFile(filepath.Join(dir, "last-launch.json")); readErr == nil && json.Unmarshal(data, &launch) == nil {
+		stages := map[string]string{"discovery_failed": "安装发现失败", "feature_check_failed": "原版功能查询失败", "preparation_failed": "采集准备信息保存失败", "package_launch_failed": "应用包启动失败", "desktop_started": "桌面进程已创建", "backend_connected": "采集后端曾接通", "backend_pending": "桌面已创建，采集后端未确认"}
+		stage := stages[launch.Stage]
+		if stage == "" {
+			stage = launch.Stage
+		}
+		fmt.Printf("上次启动尝试：%s，%s；桌面 PID %d（历史记录，不代表当前存活）。\n", launch.At.Local().Format("2006-01-02 15:04:05"), stage, launch.PID)
+		if launch.Error != "" {
+			fmt.Println("上次启动诊断：", launch.Error)
+		}
 	}
 	var state captureRunState
 	data, err := os.ReadFile(filepath.Join(dir, "active.json"))

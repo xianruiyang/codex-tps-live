@@ -107,11 +107,11 @@ HTTP 测试为 Codex 模型列表 GET；WebSocket 为响应地址的 Upgrade GET
 `启动Codex计时采集.cmd` 的行为只有两种：
 
 - **Codex 正在运行**：只查询采集状态，不保存准备信息、不改设置、不启动另一份 Codex，也不接管或重启当前进程。
-- **Codex 未运行**：直接查询 Windows 当前用户的安装注册信息及本机原版 CLI，完成路径准备并尝试启动，不要求先正常打开 Codex 再关闭。安装或 CLI 候选不唯一时明确报错，不按文件修改时间猜选。仅保存采集器自己的本机路径信息。
+- **Codex 未运行**：查询 Windows 当前用户的安装注册信息、Manifest 应用入口及本机原版 CLI，通过 Windows 应用包身份桥接尝试启动；不再从普通进程直接执行 WindowsApps 内的桌面 EXE。无需先正常打开 Codex 再关闭。安装或 CLI 候选不唯一时明确报错，不按文件修改时间猜选。仅保存采集器自己的本机路径信息。
 
-启动时只给本次进程设置定向 `RUST_LOG` 和当前桌面版本支持的内部 `CODEX_CLI_PATH` 覆盖；原版 CLI 通过 `--enable runtime_metrics` 接收仅本次调用有效的功能开关，**不写 `config.toml`、不设置全局环境**。普通监控不执行以上操作。原版 CLI 处理请求，stdin/stdout 直接继承原句柄，采集器不解析或改写 RPC，也不代理网络。后端启动是否成功，以本次启动 ID、采集器和原版后端进程同时存在为依据；只启动了桌面程序时不能宣称采集已接通。即使进程已接通，也不代表收到了 timing 或测得了 TTFT。
+启动时只给本次进程设置定向 `RUST_LOG` 和当前桌面版本支持的内部 `CODEX_CLI_PATH` 覆盖；原版 CLI 通过 `--enable runtime_metrics` 接收仅本次调用有效的功能开关，**不写 `config.toml`、不设置全局环境**。普通权限运行即可，不需要接管 WindowsApps 权限。包身份桥接使用 Windows 自带的 Appx 组件；若企业策略禁用该组件，会明确报错。临时环境通过仅监听 `127.0.0.1` 的一次性启动通道传递，使用随机令牌校验，环境内容不写入文件或命令行；该通道只用于启动桥接，不承载 Codex 请求。普通监控不执行以上操作。原版 CLI 处理请求，stdin/stdout 直接继承原句柄，采集器不解析或改写 RPC，也不代理网络。后端启动是否成功，以本次启动 ID、采集器和原版后端进程同时存在为依据；只创建了桌面进程时不能宣称采集已接通，15 秒内未接通会单独提示。即使进程已接通，也不代表收到了 timing 或测得了 TTFT。
 
-`runtime_metrics` 是开发中功能，服务端是否返回 timing 及其结构取决于版本，当前仍未完成本机真实采集验证。可以只读运行 `codex-tps-capture.exe --capture-discover` 核对未运行时所用的安装发现路径；`--capture-status` 查看进程及诊断状态；显式 `--capture-setup` 仅保存采集器自己的路径信息，不更改 Codex 设置。无需为普通监控关闭 Codex。
+`runtime_metrics` 是开发中功能，服务端是否返回 timing 及其结构取决于版本，此功能仍属实验，实际可用性须以采集状态和计时事件为准。`codex-tps-capture.exe --capture-check` 可在 Codex 运行时检查应用包身份、桌面 EXE 执行访问、临时环境传递及采集目录可见性，只启动本工具的独立诊断子进程，临时诊断文件用后删除，不启动/关闭 Codex；诊断通过不代表桌面或后端已经接通。`--capture-discover` 核对安装发现路径；`--capture-status` 查看进程及诊断状态，也显示保存在采集器数据目录 `last-launch.json` 中的上次启动阶段和错误；显式 `--capture-setup` 仅保存采集器自己的路径信息，不更改 Codex 设置。无需为普通监控或上述诊断关闭 Codex。
 
 stderr 先原样交给桌面端，仅额外副本使用最多 32 个 16 KiB 块的有界非阻塞队列。解析与写盘在后台进行。固定白名单保存旧式引擎数值、新式 `critical_path` 数值、scope/coverage/boundary 与关联元数据；未知结构保留安全的“未识别结构”诊断，不保存原始 payload、正文、工具输出或认证信息。缺字段不按零值补齐，`null` 不当成 0；不同 scope 的累计值不跨响应相加。
 

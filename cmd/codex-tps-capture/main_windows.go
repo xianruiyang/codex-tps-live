@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,7 +19,9 @@ import (
 
 func main() {
 	var err error
-	if len(os.Args) == 2 {
+	if len(os.Args) > 1 && os.Args[1] == "--capture-package-bridge" {
+		err = runCapturePackageBridge(os.Args[2:])
+	} else if len(os.Args) == 2 {
 		switch os.Args[1] {
 		case "--capture-setup":
 			err = prepareCapture()
@@ -28,6 +31,10 @@ func main() {
 			err = disableCapture()
 		case "--capture-status":
 			err = captureStatus()
+		case "--capture-check":
+			err = checkCapturePackage()
+		case "--capture-package-info":
+			err = json.NewEncoder(os.Stdout).Encode(currentCapturePackageInfo())
 		case "--capture-discover":
 			var cfg captureConfig
 			cfg, err = discoverInstalledCapture(false)

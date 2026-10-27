@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -37,7 +38,7 @@ func captureHome() (string, error) {
 
 // Query current-user package registration, not running processes or a guessed
 // WindowsApps version directory. This path also works before Codex is started.
-func installedCodexApps() ([]string, error) {
+func installedCodexApps() ([]captureConfig, error) {
 	kernel := windows.NewLazySystemDLL("kernel32.dll")
 	packages := kernel.NewProc("GetPackagesByPackageFamily")
 	packagePath := kernel.NewProc("GetPackagePathByFullName")
@@ -60,7 +61,7 @@ func installedCodexApps() ([]string, error) {
 			}
 		}
 	}
-	apps := map[string]bool{}
+	apps := map[string]captureConfig{}
 	for family := range families {
 		familyUTF16, _ := windows.UTF16PtrFromString(family)
 		var count, size uint32
@@ -85,16 +86,30 @@ func installedCodexApps() ([]string, error) {
 			path := make([]uint16, pathSize)
 			code, _, _ = packagePath.Call(uintptr(unsafe.Pointer(name)), uintptr(unsafe.Pointer(&pathSize)), uintptr(unsafe.Pointer(&path[0])))
 			if code == 0 {
-				app := filepath.Join(windows.UTF16ToString(path), "app", "ChatGPT.exe")
-				if executableExists(app, "ChatGPT.exe") {
-					apps[app] = true
+				root := windows.UTF16ToString(path)
+				data, readErr := os.ReadFile(filepath.Join(root, "AppxManifest.xml"))
+				var manifest struct {
+					Apps []struct {
+						ID         string `xml:"Id,attr"`
+						Executable string `xml:"Executable,attr"`
+						EntryPoint string `xml:"EntryPoint,attr"`
+					} `xml:"Applications>Application"`
+				}
+				if readErr != nil || xml.Unmarshal(data, &manifest) != nil {
+					continue
+				}
+				for _, application := range manifest.Apps {
+					app := filepath.Join(root, filepath.FromSlash(application.Executable))
+					if application.ID != "" && application.EntryPoint == "Windows.FullTrustApplication" && executableExists(app, "ChatGPT.exe") {
+						apps[app] = captureConfig{CodexApp: app, PackageFamily: family, PackageAppID: application.ID}
+					}
 				}
 			}
 		}
 		runtime.KeepAlive(buffer)
 	}
-	result := make([]string, 0, len(apps))
-	for app := range apps {
+	result := make([]captureConfig, 0, len(apps))
+	for _, app := range apps {
 		result = append(result, app)
 	}
 	return result, nil
@@ -109,7 +124,7 @@ func discoverInstalledCapture(useSaved bool) (captureConfig, error) {
 	if len(apps) != 1 {
 		return cfg, fmt.Errorf("发现 %d 个可用 Codex 桌面安装，无法唯一确定目标；未启动程序或修改配置", len(apps))
 	}
-	cfg.CodexApp = apps[0]
+	cfg = apps[0]
 	old, oldErr := loadCaptureConfig()
 	if useSaved && oldErr == nil && strings.EqualFold(old.CodexApp, cfg.CodexApp) && executableExists(old.CodexCLI, "codex.exe") {
 		cfg.CodexCLI = old.CodexCLI
