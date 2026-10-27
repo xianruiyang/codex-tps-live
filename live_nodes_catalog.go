@@ -92,11 +92,7 @@ func readLiveNodeYAML(path string, out any) error {
 	return nil
 }
 
-func discoverLiveNodes(homeOverride, binaryOverride string) liveNodeInventory {
-	inv := liveNodeInventory{
-		catalog: liveNodeCatalog{Subscriptions: []liveNodeSubscription{}, Updated: time.Now()},
-		specs:   make(map[string]*liveNodeSpec),
-	}
+func resolveLiveClashHome(homeOverride string) string {
 	home := homeOverride
 	if home == "" {
 		base, _ := os.UserConfigDir()
@@ -108,6 +104,15 @@ func discoverLiveNodes(homeOverride, binaryOverride string) liveNodeInventory {
 			}
 		}
 	}
+	return home
+}
+
+func discoverLiveNodes(homeOverride, binaryOverride string) liveNodeInventory {
+	inv := liveNodeInventory{
+		catalog: liveNodeCatalog{Subscriptions: []liveNodeSubscription{}, Updated: time.Now()},
+		specs:   make(map[string]*liveNodeSpec),
+	}
+	home := resolveLiveClashHome(homeOverride)
 	if home == "" {
 		inv.catalog.Error = "没有发现 Clash Verge 订阅目录。请先安装并导入订阅；自定义目录可通过 --clash-home 指定。"
 		return inv

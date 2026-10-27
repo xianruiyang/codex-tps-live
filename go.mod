@@ -9,6 +9,11 @@ require gonum.org/v1/plot v0.16.0
 require go.yaml.in/yaml/v3 v3.0.4
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
+	github.com/gorilla/websocket v1.5.3
+)
+
+require (
 	codeberg.org/go-fonts/liberation v0.5.0 // indirect
 	codeberg.org/go-latex/latex v0.1.0 // indirect
 	codeberg.org/go-pdf/fpdf v0.10.0 // indirect

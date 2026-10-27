@@ -110,6 +110,16 @@ The page defaults to the latest 24 hours, newest first, with time, event, conver
 
 Counts represent log events, not failed requests: one failure may produce multiple entries. Collector health is separate, showing parsing, unknown-schema and write errors without adding them to WebSocket transport errors. Request/response bodies and header maps are omitted, while keys, URL paths and query parameters are redacted. The page and its data are processed locally.
 
+### Passive proxy diagnostics
+
+Switch to **代理侧详细诊断** on the diagnostics page and enable passive collection to subscribe read-only to the main Mihomo instance's existing warning/error stream. It also shows recent connections matched to Codex/ChatGPT process names, destination hosts and proxy groups/nodes. It never restarts Codex, starts probes, changes the main proxy's nodes, rules, log level or controller configuration, or proxies Codex requests. Disabling collection closes only this tool's own connections.
+
+The controller is discovered from this computer's Clash Verge configuration directory, including the existing `--clash-home` override. It supports configured Windows named pipes and the same owner's service-mode endpoint, or an explicit loopback TCP controller. No machine-specific paths, pipe owner keys or PIDs are built in. An unavailable controller affects only this feature. Collection starts disabled, and its switch is retained only for the current monitor process.
+
+Proxy logs can add outer-layer dial and timeout failures, depending on what Mihomo already records. They cannot recover unlogged OpenAI server codes or WebSocket close frames inside TLS. Only warnings with explicit OpenAI/ChatGPT targets are retained; explicitly unrelated application processes are excluded. Missing process fields remain unconfirmed. Connection snapshots identify process names, not specific PIDs, Codex instances, threads or requests. Nearby timestamps are never used to invent a request association or cause. No matching warnings does not establish an absence of failures.
+
+Memory retains the latest 300 redacted warnings for this monitor process, without storing raw proxy logs or recovering pre-subscription history. Connection snapshots refresh about every ten seconds; warnings arrive over a separate local controller connection. Pausing the list keeps collection running, while stopping collection releases this tool's connections. These records are lost when the monitor exits. Ordinary Codex monitoring still works without Clash Verge installed.
+
 ## Optional WebSocket server diagnostics (experimental)
 
 This is not a validated client per-request TTFT collector. Engine timings and logical-turn cumulative values have different boundaries from client first-content waiting. Even fields named `ttft` are never mapped to client TTFT, subtracted from response duration, used for actual TPS, or used to infer a response's transport from a time-window match. Existing HTTP estimates and the first-only/assumed-zero policy remain in place.
