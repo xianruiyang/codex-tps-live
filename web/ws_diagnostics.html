@@ -22,7 +22,7 @@
 <div class="summary" aria-label="当前筛选范围内的事件数"><div class="stat"><span>错误记录</span><strong id="errors">—</strong></div><div class="stat"><span>HTTP 回退记录</span><strong id="fallbacks">—</strong></div><div class="stat"><span>重试 / 重连记录</span><strong id="retries">—</strong></div></div>
 <div id="status" class="notice" role="status">正在读取本地日志…</div>
 <section class="panel list-panel" aria-label="WebSocket 诊断记录"><div class="list-head"><h2>诊断记录 · 最新在前</h2><span id="recordCount" class="muted"></span></div><div id="records" class="records"><div class="empty">正在读取…</div></div><div class="list-foot"><span id="paging" class="muted">每次加载最多 100 条</span><button id="older" type="button" disabled>加载更早记录</button></div></section>
-<p class="source-note">只读 Codex 已记录的本地客户端日志，不需要启用计时采集或重启 Codex。这里统计的是日志事件，并非失败请求数；同一次故障可能产生错误、重试和回退等多条记录。没有关联信息时保留“未记录”，不按时间猜测所属请求。日志未保留的错误无法补回。</p>
+<p class="source-note">包含 WebSocket 模块与请求重试层的只读日志，不需要重启 Codex。重试层还可能来自 HTTP 或上下文压缩；只有日志明确指向 WebSocket 才标为 WebSocket，其余标记“传输未确认”。计数是日志事件数，不是失败请求数。重试计数原样显示，不据此推断后续成功、最终失败或关闭码。日志未给出数值的等待时间不补猜；“服务端提前关闭”也不能证明更深层的关闭原因。</p>
 <details class="panel"><summary>采集器自身状态（与 WebSocket 传输错误分开）</summary><p id="captureMessage">正在读取…</p><div id="capture" class="capture-grid"></div><p>这些计数用于排查可选采集器的解析、队列与写盘问题，不计入上方错误记录，也不代表客户端 TTFT。未开启采集器仍可查看上方已记录的 WebSocket 错误。</p></details>
 </main>
 <script>
@@ -32,6 +32,8 @@ let light=false;try{light=localStorage.getItem('codex-tps-live-theme')==='light'
 function theme(){document.documentElement.classList.toggle('light',light);$('theme').textContent=light?'深色主题':'浅色主题';}theme();$('theme').onclick=()=>{light=!light;theme();try{localStorage.setItem('codex-tps-live-theme',light?'light':'dark');}catch{}};
 const state={filters:null,rows:[],next:'',paused:false,busy:false,historical:false,to:null,from:null,generation:0,signature:'',threadSignature:'',total:0};
 const typeNames={tls:'TLS 错误',connect:'连接失败',timeout:'超时',disconnected:'连接断开',retry:'重试 / 重连',http_fallback:'HTTP 回退',other:'其他异常'};
+const transportNames={websocket:'WebSocket',websocket_to_http:'WebSocket → HTTP',unknown:'传输未确认'};
+const operationNames={sampling:'模型响应',compact:'上下文压缩'};
 function short(value){return value?value.slice(0,8):'未记录';}
 function localTime(value){const d=new Date(value);return Number.isNaN(+d)?value:d.toLocaleString('zh-CN',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0');}
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
@@ -43,15 +45,15 @@ function renderRows(){
  const fragment=document.createDocumentFragment();
  for(const row of state.rows){
   const card=el('article','record'),top=el('div','record-top');
-  top.append(el('span','badge'+(row.kind==='retry'||row.kind==='http_fallback'?'':' error'),typeNames[row.kind]||'异常'),el('strong','',row.reason));
+  top.append(el('span','badge'+(row.kind==='retry'||row.kind==='http_fallback'?'':' error'),typeNames[row.kind]||'异常'),el('span','badge',transportNames[row.transport]||'传输未确认'),el('strong','',row.reason));
   const date=el('time','',localTime(row.at));date.dateTime=row.at;top.append(date);card.append(top);
-  const context=[row.title||('对话 '+short(row.thread_id))];if(row.turn_id)context.push('轮次 '+short(row.turn_id));if(row.status)context.push('HTTP '+row.status);if(row.close_code)context.push('关闭码 '+row.close_code);
+  const context=[row.title||('对话 '+short(row.thread_id))];if(row.turn_id)context.push('轮次 '+short(row.turn_id));if(row.operation)context.push(operationNames[row.operation]||row.operation);if(row.retries!=null)context.push('重试计数 '+row.retries+(row.max_retries!=null?' / '+row.max_retries:''));if(row.retry_delayed)context.push('等待后重试（未记录等待时长）');if(row.status)context.push('HTTP '+row.status);if(row.socket_code)context.push('系统 socket 错误 '+row.socket_code);if(row.close_code)context.push('WS 关闭码 '+row.close_code);
   card.append(el('div','context',context.join(' · ')),el('pre','message',row.message||row.reason));
   const details=el('details'),summary=el('summary','','记录详情'+(row.truncated?' · 内容已截断':''));details.dataset.id=row.id;details.open=open.has(row.id);details.append(summary);
-  const metadata=el('dl','metadata');for(const [name,value] of [['日志级别',row.level],['日志来源',row.target],['对话 ID',row.thread_id],['轮次 ID',row.turn_id],['进程标识',row.process_id]])metadata.append(el('dt','',name),el('dd','',value||'未记录'));
+  const metadata=el('dl','metadata');for(const [name,value] of [['日志级别',row.level],['日志来源',row.target],['传输证据',row.transport==='websocket'?'错误正文或日志模块明确指向 WebSocket':row.transport==='websocket_to_http'?'原生客户端明确记录 HTTP 回退':'重试层未明确记录本次传输，未按相邻日志推断'],['请求阶段',operationNames[row.operation]||'未记录'],['关闭方向',row.close_origin==='server'?'原始日志明确记录服务端提前关闭；不推断更深层原因':'未记录'],['对话 ID',row.thread_id],['轮次 ID',row.turn_id],['进程标识',row.process_id]])metadata.append(el('dt','',name),el('dd','',value||'未记录'));
   details.append(metadata);card.append(details);fragment.append(card);
  }
- if(!state.rows.length)fragment.append(el('div','empty',state.pending?'历史补读中，尚未找到匹配记录。':state.unavailable?'未找到可读取的 Codex 本地日志。':state.readError?'日志读取暂不可用，请查看上方提示。':'此筛选范围内暂无已记录的 WebSocket 异常。'));
+ if(!state.rows.length)fragment.append(el('div','empty',state.pending?'历史补读中，尚未找到匹配记录。':state.unavailable?'未找到可读取的 Codex 本地日志。':state.readError?'日志读取暂不可用，请查看上方提示。':'此筛选范围内暂无已记录的 WebSocket 或请求重试异常。'));
  $('records').replaceChildren(fragment);
 }
 function renderCapture(c={}){
@@ -64,7 +66,7 @@ async function load(older=false,force=false){
  try{
   if(!older){state.to=new Date().toISOString();state.from=new Date(Date.parse(state.to)-state.filters.hours*3600000).toISOString();}
   const params=new URLSearchParams({from:state.from,to:state.to,kind:state.filters.kind,thread:state.filters.thread,q:state.filters.q,limit:'100'});if(older)params.set('before',state.next);
-  const response=await fetch('/api/ws-diagnostics?'+params,{cache:'no-store'});if(!response.ok)throw new Error('读取失败（HTTP '+response.status+'）');const data=await response.json();if(generation!==state.generation)return;
+  const response=await fetch('/api/ws-diagnostics?'+params,{cache:'no-store'});if(!response.ok)throw new Error('读取失败（HTTP '+response.status+'）'+(response.status===403?'，请通过服务启动时显示的本机地址打开页面。':''));const data=await response.json();if(generation!==state.generation)return;
   state.pending=data.pending;state.unavailable=data.unavailable;state.readError=data.read_error;state.total=data.total;
   if(data.cursor_expired){state.next='';$('error').textContent='记录范围已变化，请点击“刷新并返回最新”。';return;}
   state.rows=older?[...new Map([...state.rows,...data.rows].map(row=>[row.id,row])).values()]:data.rows;state.next=data.next_before||'';
@@ -72,8 +74,8 @@ async function load(older=false,force=false){
   const notes=[state.paused?'自动刷新已暂停':'每 5 秒刷新',data.unavailable?'未找到可读取的 Codex 日志':data.read_error?'本地日志读取暂不可用':data.pending?'历史补读中，记录仍在补齐':'当前日志范围已读完'];if(data.trimmed)notes.push('内存保留最近 4,000 条诊断，较早记录可能不完整');if(state.historical)notes.push('正在浏览较早记录');
   $('status').textContent=notes.join(' · ');$('error').textContent=data.read_error?'本地日志读取暂不可用：'+data.read_error:'';
   const threadValue=$('thread').value,threadSignature=JSON.stringify([data.threads,threadValue]);if(threadSignature!==state.threadSignature){const fragment=document.createDocumentFragment(),all=el('option','','全部对话');all.value='';fragment.append(all);for(const item of data.threads){const option=el('option','',(item.title||'未命名对话')+' · '+short(item.id));option.value=item.id;fragment.append(option);}if(threadValue&&!data.threads.some(t=>t.id===threadValue)){const option=el('option','','当前对话 · '+short(threadValue));option.value=threadValue;fragment.append(option);}$('thread').replaceChildren(fragment);$('thread').value=threadValue;state.threadSignature=threadSignature;}
-  renderRows();renderCapture(data.capture);$('recordCount').textContent='已显示 '+state.rows.length+' / '+data.total+' 条';$('paging').textContent=state.next?'每次加载最多 100 条；加载更早记录会暂停自动刷新':'当前匹配记录已显示完毕';
- }catch(error){if(generation===state.generation)$('error').textContent=error.message;}
+  renderRows();renderCapture(data.capture);$('recordCount').textContent='已显示 '+state.rows.length+' / '+data.total+' 条'+(data.unconfirmed?' · '+data.unconfirmed+' 条传输未确认':'');$('paging').textContent=state.next?'每次加载最多 100 条；加载更早记录会暂停自动刷新':'当前匹配记录已显示完毕';
+ }catch(error){if(generation===state.generation){state.readError=error.message;state.pending=false;$('error').textContent=error.message;$('status').textContent=state.rows.length?'读取失败，保留上次已加载记录。':'尚未读取到诊断记录，请查看上方错误提示。';renderRows();}}
  finally{state.busy=false;$('older').disabled=!state.next;if(state.queued){state.queued=false;load(false,true);}}
 }
 $('filters').onsubmit=event=>{event.preventDefault();apply();};$('refresh').onclick=apply;$('pause').onclick=()=>{pause(!state.paused);if(!state.paused){state.historical=false;load(false,true);}else $('status').textContent='自动刷新已暂停；已显示的记录保留。';};

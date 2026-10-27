@@ -118,7 +118,7 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 			r.latest = 0
 		}
 	}
-	const fields = `SELECT id,ts,ts_nanos,coalesce(process_uuid,''),coalesce(thread_id,''),target,coalesce(level,''),substr(coalesce(feedback_log_body,''),1,8192) FROM logs WHERE (target IN ('codex_http_client::request','codex_http_client::client','codex_api::endpoint::responses_websocket','feedback_tags','codex_core::client','codex_api::sse::responses') OR (target='codex_core::codex' AND level IN ('WARN','ERROR'))) AND ts >= ?`
+	const fields = `SELECT id,ts,ts_nanos,coalesce(process_uuid,''),coalesce(thread_id,''),target,coalesce(level,''),substr(coalesce(feedback_log_body,''),1,8192) FROM logs WHERE (target IN ('codex_http_client::request','codex_http_client::client','codex_api::endpoint::responses_websocket','feedback_tags','codex_core::client','codex_api::sse::responses') OR (target IN ('codex_core::codex','codex_core::responses_retry') AND level IN ('WARN','ERROR'))) AND ts >= ?`
 	query, args := "", []any{since.Unix()}
 	forward := r.latest > 0 && maximum > r.latest
 	if forward && r.backfillNext && !r.historyDone && r.oldest > 0 {

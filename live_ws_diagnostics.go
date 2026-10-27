@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,20 +14,27 @@ import (
 // Kept separately from the typed protocol cache: only a bounded, redacted
 // diagnostic message is retained. Raw log bodies and HTTP headers stay private.
 type liveWSDiagnostic struct {
-	ID        string    `json:"id"`
-	At        time.Time `json:"at"`
-	Level     string    `json:"level"`
-	Kind      string    `json:"kind"`
-	Reason    string    `json:"reason"`
-	Message   string    `json:"message"`
-	Target    string    `json:"target"`
-	Thread    string    `json:"thread_id,omitempty"`
-	Turn      string    `json:"turn_id,omitempty"`
-	Process   string    `json:"process_id,omitempty"`
-	Title     string    `json:"title,omitempty"`
-	Status    int       `json:"status,omitempty"`
-	CloseCode int       `json:"close_code,omitempty"`
-	Truncated bool      `json:"truncated,omitempty"`
+	ID           string    `json:"id"`
+	At           time.Time `json:"at"`
+	Level        string    `json:"level"`
+	Kind         string    `json:"kind"`
+	Reason       string    `json:"reason"`
+	Message      string    `json:"message"`
+	Target       string    `json:"target"`
+	Thread       string    `json:"thread_id,omitempty"`
+	Turn         string    `json:"turn_id,omitempty"`
+	Process      string    `json:"process_id,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Status       int       `json:"status,omitempty"`
+	CloseCode    int       `json:"close_code,omitempty"`
+	Transport    string    `json:"transport"`
+	Operation    string    `json:"operation,omitempty"`
+	Retries      *int      `json:"retries,omitempty"`
+	MaxRetries   *int      `json:"max_retries,omitempty"`
+	RetryDelayed bool      `json:"retry_delayed,omitempty"`
+	SocketCode   int       `json:"socket_code,omitempty"`
+	CloseOrigin  string    `json:"close_origin,omitempty"`
+	Truncated    bool      `json:"truncated,omitempty"`
 }
 
 var wsDiagnosticURL = regexp.MustCompile(`(?i)\b(?:wss?|https?)://[^\s"'<>]+`)
@@ -35,6 +43,21 @@ var wsDiagnosticSecretField = regexp.MustCompile(`(?i)(["']?\b(?:authorization|p
 var wsDiagnosticPrivatePayload = regexp.MustCompile(`(?i)["']?\b(?:headers|request_body|response_body|body|payload|input)\b["']?\s*[=:]`)
 var wsDiagnosticHTTP = regexp.MustCompile(`(?i)\b(?:status(?:\s+code)?|HTTP(?:\s+error)?)[=: \t]+(\d{3})\b`)
 var wsDiagnosticClose = regexp.MustCompile(`(?i)\bclose(?:[_ ]code)?[=: \t]+([1-4]\d{3})\b`)
+var wsDiagnosticRetries = regexp.MustCompile(`(?i)\bretries["']?\s*[=:]\s*(\d+)\b`)
+var wsDiagnosticMaxRetries = regexp.MustCompile(`(?i)\bmax_retries["']?\s*[=:]\s*(\d+)\b`)
+var wsDiagnosticSocket = regexp.MustCompile(`(?i)\bos error\s+(\d+)\b`)
+
+func wsDiagnosticInt(pattern *regexp.Regexp, body string) *int {
+	match := pattern.FindStringSubmatch(body)
+	if len(match) != 2 {
+		return nil
+	}
+	value, err := strconv.Atoi(match[1])
+	if err != nil {
+		return nil
+	}
+	return &value
+}
 
 func wsContainsAny(value string, terms ...string) bool {
 	for _, term := range terms {
@@ -84,36 +107,64 @@ func redactedWSMessage(body string) (string, bool) {
 }
 
 func parseWSDiagnostic(event liveTimingEvent, target, level, body string) *liveWSDiagnostic {
-	if target != "codex_api::endpoint::responses_websocket" && target != "codex_core::client" && target != "codex_core::codex" && target != "codex_api::sse::responses" {
+	retrySource := target == "codex_core::responses_retry"
+	if !retrySource && target != "codex_api::endpoint::responses_websocket" && target != "codex_core::client" && target != "codex_core::codex" && target != "codex_api::sse::responses" {
 		return nil
 	}
 	lower := strings.ToLower(body)
 	level = strings.ToUpper(level)
 	fallback := target == "codex_core::client" && strings.Contains(lower, "falling back to http")
 	ws := target == "codex_api::endpoint::responses_websocket" || strings.Contains(lower, "websocket")
-	if !fallback && !ws {
+	if !fallback && !ws && !retrySource {
 		return nil
 	}
 	if !fallback && level != "WARN" && level != "ERROR" && !wsContainsAny(lower, "retrying", "retry attempt", "reconnecting") {
 		return nil
 	}
-	row := liveWSDiagnostic{At: event.at.UTC(), Level: level, Target: target, Thread: event.thread, Turn: event.turn, Process: event.process, Kind: "other", Reason: "WebSocket 传输异常"}
+	row := liveWSDiagnostic{At: event.at.UTC(), Level: level, Target: target, Thread: event.thread, Turn: event.turn, Process: event.process, Kind: "other", Reason: "请求传输异常", Transport: "unknown"}
+	if ws {
+		row.Transport = "websocket"
+	}
+	if fallback {
+		row.Transport = "websocket_to_http"
+	}
+	if value := wsDiagnosticSocket.FindStringSubmatch(body); len(value) == 2 {
+		row.SocketCode, _ = strconv.Atoi(value[1])
+	}
 	switch {
 	case fallback:
 		row.Kind, row.Reason = "http_fallback", "WebSocket 已回退到 HTTP"
+	case strings.Contains(lower, "websocket closed by server before response.completed"):
+		row.Kind, row.Reason, row.CloseOrigin = "disconnected", "服务端在响应完成前关闭 WebSocket", "server"
+	case row.SocketCode != 0:
+		row.Kind, row.Reason = "disconnected", fmt.Sprintf("连接中断（系统 socket 错误 %d）", row.SocketCode)
 	case wsContainsAny(lower, "tls handshake eof", "tls handshake", "certificate", "rustls", "ssl error"):
 		row.Kind, row.Reason = "tls", "TLS 握手或证书错误"
 		if strings.Contains(lower, "tls handshake eof") {
 			row.Reason = "TLS 握手时连接结束（EOF）"
 		}
 	case wsContainsAny(lower, "timed out", "timeout", "deadline exceeded"):
-		row.Kind, row.Reason = "timeout", "WebSocket 连接或接收超时"
+		row.Kind, row.Reason = "timeout", "连接或接收超时"
 	case wsContainsAny(lower, "retrying", "retry attempt", "reconnecting"):
-		row.Kind, row.Reason = "retry", "WebSocket 正在重试或重连"
+		row.Kind, row.Reason = "retry", "请求正在重试或重连"
 	case wsContainsAny(lower, "connection closed", "stream disconnected", "connection reset", "closed by server", "connectionclosed"):
-		row.Kind, row.Reason = "disconnected", "WebSocket 连接断开"
+		row.Kind, row.Reason = "disconnected", "响应流连接断开"
 	case strings.Contains(lower, "failed to connect"):
-		row.Kind, row.Reason = "connect", "WebSocket 连接建立失败"
+		row.Kind, row.Reason = "connect", "连接建立失败"
+	}
+	if retrySource {
+		// Retry logs cover both sampling and compaction, over multiple transports.
+		// Neither the target nor a nearby handshake proves this attempt used WS.
+		row.Kind = "retry"
+		row.Retries = wsDiagnosticInt(wsDiagnosticRetries, body)
+		row.MaxRetries = wsDiagnosticInt(wsDiagnosticMaxRetries, body)
+		row.RetryDelayed = strings.Contains(lower, "retrying request after delay")
+		if strings.Contains(lower, "sampling_error=") {
+			row.Operation = "sampling"
+		}
+		if strings.Contains(lower, "compact_error=") {
+			row.Operation = "compact"
+		}
 	}
 	if match := wsDiagnosticHTTP.FindStringSubmatch(body); len(match) == 2 {
 		fmt.Sscan(match[1], &row.Status)
@@ -174,6 +225,7 @@ type liveWSDiagnosticSnapshot struct {
 	Errors        int                      `json:"errors"`
 	Retries       int                      `json:"retries"`
 	Fallbacks     int                      `json:"fallbacks"`
+	Unconfirmed   int                      `json:"unconfirmed"`
 	NextBefore    string                   `json:"next_before,omitempty"`
 	CursorExpired bool                     `json:"cursor_expired"`
 	Pending       bool                     `json:"pending"`
@@ -220,10 +272,13 @@ func (m *liveMonitor) websocketDiagnostics(from, to time.Time, kind, thread, que
 		if thread != "" && row.Thread != thread {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(row.Title+" "+row.Thread+" "+row.Reason+" "+row.Message+" "+row.Target), query) {
+		if query != "" && !strings.Contains(strings.ToLower(row.Title+" "+row.Thread+" "+row.Reason+" "+row.Message+" "+row.Target+" "+row.Operation+" "+row.Transport), query) {
 			continue
 		}
 		rows = append(rows, row)
+		if row.Transport == "unknown" {
+			result.Unconfirmed++
+		}
 		if row.Kind == "http_fallback" {
 			result.Fallbacks++
 		} else if row.Kind == "retry" {
