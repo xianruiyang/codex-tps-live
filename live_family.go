@@ -33,6 +33,7 @@ type liveFamilyMember struct {
 	AgentPath     string          `json:"agent_path,omitempty"`
 	Model         string          `json:"model"`
 	Archived      bool            `json:"archived"`
+	Available     bool            `json:"available"`
 	Depth         int             `json:"depth"`
 	Turns         int             `json:"turns"`
 	Responses     int             `json:"responses"`
@@ -179,6 +180,15 @@ func (m *liveMonitor) updateFamilyScope(now time.Time) {
 	}
 }
 
+func (m *liveMonitor) hasActiveFamilyViews(now time.Time) bool {
+	for _, request := range m.familyViews {
+		if now.Sub(request.At) <= 20*time.Second {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *liveMonitor) family(id string, window int, all bool, rules liveQuotaRules) (liveFamilyUsage, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -189,6 +199,9 @@ func (m *liveMonitor) family(id string, window int, all bool, rules liveQuotaRul
 	if m.familyFiles == nil {
 		m.familyFiles = map[string]liveFamilyFile{}
 		m.familyViews = map[string]liveFamilyRequest{}
+	}
+	if !m.hasActiveFamilyViews(time.Now()) {
+		m.familyReady = false
 		m.discovered = time.Time{} // Discover older relatives on the next background poll.
 	}
 	requested := window
@@ -213,6 +226,7 @@ func (m *liveMonitor) family(id string, window int, all bool, rules liveQuotaRul
 		}
 		if f := sessions[memberID]; f != nil {
 			s := f.session
+			row.Available = true
 			row.Title, row.Model, row.Archived = s.Title, s.model, f.archived
 			if name := m.names.entries[s.ID].Name; name != "" {
 				row.Title = name

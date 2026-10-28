@@ -21,10 +21,10 @@ import (
 	"time"
 )
 
-//go:embed web/index.html web/trends.html web/quota.html web/nodes.html web/node_plans.html web/ws_diagnostics.html
+//go:embed web/index.html web/family.html web/trends.html web/quota.html web/nodes.html web/node_plans.html web/ws_diagnostics.html
 var liveAssets embed.FS
 
-const liveVersion = "0.20.6"
+const liveVersion = "0.20.7"
 
 // RunLive starts a loopback-only dashboard. Codex logs remain read-only. Only
 // authorized node tests and their saved continuations make outbound probes.
@@ -125,6 +125,11 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	})
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		writeLiveJSON(w, monitor.snapshot(liveTurnWindow(r), quotaRules(r)))
+	})
+	mux.HandleFunc("/family", func(w http.ResponseWriter, r *http.Request) {
+		page, _ := liveAssets.ReadFile("web/family.html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(page)
 	})
 	mux.HandleFunc("/trends", func(w http.ResponseWriter, r *http.Request) {
 		page, _ := liveAssets.ReadFile("web/trends.html")

@@ -196,6 +196,7 @@ func (m *liveMonitor) discover(now time.Time) {
 	}
 	seen := map[string]discoveredFile{}
 	familySeen := map[string]bool{}
+	scanFamily := m.hasActiveFamilyViews(now)
 	known := map[string][]*liveFile{}
 	for _, f := range m.files {
 		id := liveID(f.path)
@@ -225,7 +226,7 @@ func (m *liveMonitor) discover(now time.Time) {
 			if err != nil {
 				return nil
 			}
-			if m.familyFiles != nil {
+			if scanFamily {
 				familySeen[path] = true
 				meta, exists := m.familyFiles[path]
 				if !exists || meta.Info.Size() != info.Size() || !meta.Info.ModTime().Equal(info.ModTime()) || !os.SameFile(meta.Info, info) {
@@ -244,7 +245,7 @@ func (m *liveMonitor) discover(now time.Time) {
 			m.addError(err.Error())
 		}
 	}
-	if m.familyFiles != nil {
+	if scanFamily {
 		for path := range m.familyFiles {
 			if !familySeen[path] {
 				delete(m.familyFiles, path)
