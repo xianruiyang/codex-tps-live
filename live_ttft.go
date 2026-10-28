@@ -221,11 +221,14 @@ func (r *liveTimingReader) read(now, since time.Time) ([]liveTimingEvent, error)
 }
 
 type liveTimingIndex struct {
-	events      map[string]liveTimingEvent
-	threads     map[string][]liveTimingEvent
-	headers     map[string][]liveTimingEvent
-	pending     bool
-	unavailable bool
+	revision          uint64
+	orphanCorrections uint64
+	threadRevisions   map[string]uint64
+	events            map[string]liveTimingEvent
+	threads           map[string][]liveTimingEvent
+	headers           map[string][]liveTimingEvent
+	pending           bool
+	unavailable       bool
 }
 
 func (x *liveTimingIndex) add(events []liveTimingEvent) {
@@ -235,24 +238,71 @@ func (x *liveTimingIndex) add(events []liveTimingEvent) {
 	if x.events == nil {
 		x.events = map[string]liveTimingEvent{}
 	}
+	if x.threads == nil {
+		x.threads = map[string][]liveTimingEvent{}
+		x.headers = map[string][]liveTimingEvent{}
+		x.threadRevisions = map[string]uint64{}
+	}
+	dirtyThreads, dirtyHeaders := map[string]bool{}, map[string]bool{}
+	remove := func(group []liveTimingEvent, key string) []liveTimingEvent {
+		for i, event := range group {
+			if timingEventKey(event) == key {
+				return append(group[:i], group[i+1:]...)
+			}
+		}
+		return group
+	}
+	appendEvent := func(group []liveTimingEvent, event liveTimingEvent) ([]liveTimingEvent, bool) {
+		unordered := false
+		if len(group) > 0 {
+			last := group[len(group)-1]
+			unordered = last.at.After(event.at) || (last.at.Equal(event.at) && last.id > event.id)
+		}
+		return append(group, event), unordered
+	}
 	for _, e := range events {
 		if e.kind == "" {
 			continue
 		}
 		e.diagnostic = nil
-		x.events[timingEventKey(e)] = e
-	}
-	x.threads, x.headers = map[string][]liveTimingEvent{}, map[string][]liveTimingEvent{}
-	for _, e := range x.events {
+		key := timingEventKey(e)
+		if old, exists := x.events[key]; exists {
+			// Re-reading the retained cache is not new evidence. Prefer a native
+			// observation already seen in this process over its retained copy.
+			if old == e || (!old.cached && e.cached) {
+				continue
+			}
+			if old.thread != "" {
+				x.threads[old.thread] = remove(x.threads[old.thread], key)
+			}
+			if old.kind == "headers" && old.thread == "" {
+				x.headers[old.process] = remove(x.headers[old.process], key)
+				x.orphanCorrections++
+			}
+		}
+		x.events[key] = e
+		x.revision++
 		if e.thread != "" {
-			x.threads[e.thread] = append(x.threads[e.thread], e)
+			var unordered bool
+			x.threads[e.thread], unordered = appendEvent(x.threads[e.thread], e)
+			dirtyThreads[e.thread] = dirtyThreads[e.thread] || unordered
+			x.threadRevisions[e.thread] = x.revision
 		}
 		if e.kind == "headers" && e.thread == "" {
-			x.headers[e.process] = append(x.headers[e.process], e)
+			var unordered bool
+			x.headers[e.process], unordered = appendEvent(x.headers[e.process], e)
+			dirtyHeaders[e.process] = dirtyHeaders[e.process] || unordered
 		}
 	}
-	for _, groups := range []map[string][]liveTimingEvent{x.threads, x.headers} {
-		for _, group := range groups {
+	for index, dirty := range []map[string]bool{dirtyThreads, dirtyHeaders} {
+		for key, unordered := range dirty {
+			if !unordered {
+				continue
+			}
+			group := x.threads[key]
+			if index == 1 {
+				group = x.headers[key]
+			}
 			sort.Slice(group, func(i, j int) bool {
 				if group[i].at.Equal(group[j].at) {
 					return group[i].id < group[j].id

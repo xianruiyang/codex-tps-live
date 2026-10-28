@@ -159,15 +159,26 @@ func (m *liveMonitor) updateFamilyScope(now time.Time) {
 	if m.familyViews == nil {
 		return
 	}
+	for id, request := range m.familyViews {
+		if now.Sub(request.At) > 20*time.Second {
+			delete(m.familyViews, id)
+		}
+	}
+	if len(m.familyViews) == 0 {
+		for _, f := range m.files {
+			if f.familyTurns != 0 {
+				f.familyTurns = 0
+				f.requestWindow(f.windowTurns)
+			}
+		}
+		m.familyViews = nil
+		return
+	}
 	for _, f := range m.files {
 		f.familyTurns = 0
 	}
 	parents := m.familyParents(m.sessions())
 	for id, request := range m.familyViews {
-		if now.Sub(request.At) > 20*time.Second {
-			delete(m.familyViews, id)
-			continue
-		}
 		_, members, _ := liveFamilyTree(id, parents)
 		for _, f := range m.files {
 			if _, exists := members[f.session.ID]; exists {
@@ -198,6 +209,8 @@ func (m *liveMonitor) family(id string, window int, all bool, rules liveQuotaRul
 	}
 	if m.familyFiles == nil {
 		m.familyFiles = map[string]liveFamilyFile{}
+	}
+	if m.familyViews == nil {
 		m.familyViews = map[string]liveFamilyRequest{}
 	}
 	if !m.hasActiveFamilyViews(time.Now()) {
@@ -279,5 +292,10 @@ func (m *liveMonitor) family(id string, window int, all bool, rules liveQuotaRul
 		}
 		return a.ID < b.ID
 	})
+	if !out.Pending {
+		// A completed one-shot calculation has no ongoing read demand.
+		delete(m.familyViews, id)
+		m.updateFamilyScope(time.Now())
+	}
 	return out, true
 }

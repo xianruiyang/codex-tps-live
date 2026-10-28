@@ -51,12 +51,16 @@ func quotaUsageFrom(r *liveResponse) *liveQuotaUsage {
 }
 
 type liveQuotaHistory struct {
-	path        string
-	errorText   string
-	records     map[string]liveQuotaRecord
-	dirty       map[string]liveQuotaRecord
-	flushedAt   time.Time
-	waitingTier map[string]liveQuotaTierWait
+	revision      uint64
+	clockRevision uint64
+	nextReset     int64
+	resetReady    bool
+	path          string
+	errorText     string
+	records       map[string]liveQuotaRecord
+	dirty         map[string]liveQuotaRecord
+	flushedAt     time.Time
+	waitingTier   map[string]liveQuotaTierWait
 }
 
 type liveQuotaTierWait struct {
@@ -228,6 +232,32 @@ func (h *liveQuotaHistory) put(record liveQuotaRecord) {
 	}
 	h.records[record.ID] = record
 	h.dirty[record.ID] = record
+	h.revision++
+	if h.resetReady {
+		h.observeReset(record, time.Now().Unix())
+	}
+}
+
+func (h *liveQuotaHistory) observeReset(record liveQuotaRecord, now int64) {
+	for _, window := range []*liveQuotaWindow{record.Primary, record.Secondary} {
+		if window != nil && window.ResetsAt > now && (h.nextReset == 0 || window.ResetsAt < h.nextReset) {
+			h.nextReset = window.ResetsAt
+		}
+	}
+}
+
+func (h *liveQuotaHistory) advanceClock(now int64) {
+	if h.resetReady && (h.nextReset == 0 || h.nextReset > now) {
+		return
+	}
+	if h.resetReady {
+		h.clockRevision++
+	}
+	h.nextReset = 0
+	for _, record := range h.records {
+		h.observeReset(record, now)
+	}
+	h.resetReady = true
 }
 
 func (h *liveQuotaHistory) flush(force bool) {

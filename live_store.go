@@ -25,6 +25,7 @@ type liveFile struct {
 	info         os.FileInfo
 	checkpoint   []byte
 	modified     time.Time
+	verifiedAt   time.Time
 	session      *liveSession
 	initialized  bool
 	hasEarlier   bool
@@ -59,12 +60,22 @@ func (f *liveFile) setLocation(path string, archived bool) {
 }
 
 func (f *liveFile) read() error {
+	now := time.Now()
+	info, err := os.Stat(f.path)
+	if err != nil {
+		return err
+	}
+	// Continue checking size/mtime at the normal live interval. Unchanged files
+	// only need the stronger content checkpoint periodically, not twice a second.
+	if f.initialized && f.info != nil && f.offset == info.Size() && f.size == info.Size() && f.modified.Equal(info.ModTime()) && os.SameFile(f.info, info) && now.Sub(f.verifiedAt) < 5*time.Second {
+		return nil
+	}
 	file, err := os.Open(f.path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	info, err = file.Stat()
 	if err != nil {
 		return err
 	}
@@ -93,6 +104,7 @@ func (f *liveFile) read() error {
 		}
 	}
 	if f.offset >= f.size {
+		f.verifiedAt = now
 		return nil
 	}
 	if _, err = file.Seek(f.offset, io.SeekStart); err != nil {
@@ -152,6 +164,7 @@ func (f *liveFile) read() error {
 		f.checkpoint = make([]byte, min(int64(64), f.offset))
 		_, _ = file.ReadAt(f.checkpoint, f.offset-int64(len(f.checkpoint)))
 	}
+	f.verifiedAt = now
 	return nil
 }
 
@@ -182,6 +195,8 @@ type liveMonitor struct {
 	familyFiles          map[string]liveFamilyFile
 	familyViews          map[string]liveFamilyRequest
 	familyReady          bool
+	changeEpoch          string
+	sessionViews         map[string]liveSessionCacheEntry
 }
 
 func newLiveMonitor(home string, days int, showArchived bool, interval time.Duration) *liveMonitor {
@@ -475,11 +490,17 @@ func (m *liveMonitor) snapshot(window int, policies ...liveQuotaRules) liveSnaps
 		f.requestWindow(window)
 	}
 	rules := creditRules(policies)
+	policy := liveCreditCacheKey(rules)
 	result := liveSnapshot{Home: m.home, Days: m.days, IntervalMS: m.interval.Milliseconds(), UpdatedAt: m.updated, Errors: m.errors, Sessions: []liveSessionView{}, CreditRules: creditPolicy(rules), ShowArchivedByDefault: m.showArchived}
 	result.CaptureStatus = m.captureStatus
 	sessions := m.sessions()
+	for id := range m.sessionViews {
+		if sessions[id] == nil {
+			delete(m.sessionViews, id)
+		}
+	}
 	for _, f := range sessions {
-		result.Sessions = append(result.Sessions, m.namedSessionView(f, time.Now(), window, sessions, rules))
+		result.Sessions = append(result.Sessions, m.cachedSessionView(f, time.Now(), window, sessions, rules, policy))
 	}
 	sort.Slice(result.Sessions, func(i, j int) bool {
 		a, b := result.Sessions[i], result.Sessions[j]
@@ -525,7 +546,7 @@ func (m *liveMonitor) detail(id string, offset, limit, window int, policies ...l
 	f.requestWindow(window)
 	start := windowStart(s, window)
 	rules := creditRules(policies)
-	out := liveDetail{Session: m.namedSessionView(f, time.Now(), window, sessions, rules), Turns: []liveTurnView{}, Total: len(s.Turns) - start, Offset: offset, CreditRules: creditPolicy(rules)}
+	out := liveDetail{Session: m.cachedSessionView(f, time.Now(), window, sessions, rules, liveCreditCacheKey(rules)), Turns: []liveTurnView{}, Total: len(s.Turns) - start, Offset: offset, CreditRules: creditPolicy(rules)}
 	for i := len(s.Turns) - 1 - offset; i >= start && len(out.Turns) < limit; i-- {
 		copy := *s.Turns[i]
 		copy.Metrics = m.timedTurn(s, s.Turns[i])

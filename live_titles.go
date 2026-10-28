@@ -16,8 +16,9 @@ type liveSessionName struct {
 }
 
 type liveSessionNames struct {
-	info    os.FileInfo
-	entries map[string]liveSessionName
+	revision uint64
+	info     os.FileInfo
+	entries  map[string]liveSessionName
 }
 
 // Called under the monitor lock. Codex appends names and later renames here;
@@ -26,7 +27,9 @@ func (m *liveMonitor) refreshSessionNames() {
 	path := filepath.Join(m.home, "session_index.jsonl")
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
-		m.names = liveSessionNames{}
+		if m.names.info != nil {
+			m.names = liveSessionNames{revision: m.names.revision + 1}
+		}
 		return
 	}
 	if err != nil {
@@ -58,7 +61,7 @@ func (m *liveMonitor) refreshSessionNames() {
 		}
 		entries[entry.ID] = entry
 	}
-	m.names = liveSessionNames{info: info, entries: entries}
+	m.names = liveSessionNames{info: info, entries: entries, revision: m.names.revision + 1}
 }
 
 func (m *liveMonitor) namedSessionView(f *liveFile, now time.Time, window int, sessions map[string]*liveFile, rules liveQuotaRules) liveSessionView {
