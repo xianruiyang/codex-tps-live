@@ -159,9 +159,13 @@ func locateLiveTailSince(file *os.File, size int64, window int, since time.Time)
 }
 
 func (f *liveFile) initialize(file *os.File, info os.FileInfo) error {
-	seed, err := locateLiveTailSince(file, info.Size(), f.wantedTurns, f.wantedSince)
-	if err != nil {
-		return err
+	seed := liveTailSeed{}
+	if f.wantedTurns != liveFamilyAllTurns {
+		var err error
+		seed, err = locateLiveTailSince(file, info.Size(), f.wantedTurns, f.wantedSince)
+		if err != nil {
+			return err
+		}
 	}
 	f.offset = seed.start
 	f.hasEarlier = seed.start > 0
@@ -215,14 +219,15 @@ func (f *liveFile) initialize(file *os.File, info os.FileInfo) error {
 }
 
 func (f *liveFile) requestWindow(window int) {
-	f.wantedTurns = window
-	if f.backfill != nil && len(f.session.Turns) >= window && !f.rangeMissing(f.wantedSince) {
+	f.windowTurns = window
+	f.wantedTurns = max(window, f.familyTurns)
+	if f.backfill != nil && len(f.session.Turns) >= f.wantedTurns && !f.rangeMissing(f.wantedSince) {
 		f.backfill = nil
 	}
 }
 func (f *liveFile) requestSince(since time.Time) {
 	f.wantedSince = since
-	f.requestWindow(f.wantedTurns)
+	f.requestWindow(f.windowTurns)
 }
 func (f *liveFile) rangeMissing(since time.Time) bool {
 	if since.IsZero() || !f.hasEarlier || (!f.loadedSince.IsZero() && !f.loadedSince.After(since)) {
@@ -258,9 +263,10 @@ func (f *liveFile) readLatest() error {
 			return err
 		}
 		if f.backfill.offset >= f.backfill.size {
-			wanted, since, title := f.wantedTurns, f.wantedSince, f.session.Title
+			wanted, base, family, since, title := f.wantedTurns, f.windowTurns, f.familyTurns, f.wantedSince, f.session.Title
 			*f = *f.backfill
 			f.wantedTurns = wanted
+			f.windowTurns, f.familyTurns = base, family
 			f.wantedSince = since
 			if title != "" {
 				f.session.Title = title

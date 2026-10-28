@@ -1,9 +1,9 @@
 [CmdletBinding()]
-param()
+param([string]$OutputDirectory = 'dist')
 
 $ErrorActionPreference = 'Stop'
 $taskRepo = [System.IO.Directory]::GetParent($PSScriptRoot).FullName
-$taskOutput = Join-Path $taskRepo 'dist'
+$taskOutput = [System.IO.Path]::GetFullPath($OutputDirectory, $taskRepo)
 $taskProgram = Join-Path $taskOutput 'codex-tps-live.exe'
 $taskArchive = Join-Path $taskRepo 'codex-tps-live-windows-amd64.zip'
 $taskUtf8 = [System.Text.UTF8Encoding]::new($false)

@@ -24,7 +24,7 @@ import (
 //go:embed web/index.html web/trends.html web/quota.html web/nodes.html web/node_plans.html web/ws_diagnostics.html
 var liveAssets embed.FS
 
-const liveVersion = "0.20.5"
+const liveVersion = "0.20.6"
 
 // RunLive starts a loopback-only dashboard. Codex logs remain read-only. Only
 // authorized node tests and their saved continuations make outbound probes.
@@ -168,6 +168,14 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 			return
 		}
 		writeLiveJSON(w, rows)
+	})
+	mux.HandleFunc("/api/family", func(w http.ResponseWriter, r *http.Request) {
+		usage, ok := monitor.family(r.URL.Query().Get("id"), liveTurnWindow(r), r.URL.Query().Get("scope") != "window", quotaRules(r))
+		if !ok {
+			http.Error(w, "conversation not found", http.StatusNotFound)
+			return
+		}
+		writeLiveJSON(w, usage)
 	})
 	mux.HandleFunc("/api/export", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")

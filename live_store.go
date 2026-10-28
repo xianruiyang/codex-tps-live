@@ -29,6 +29,8 @@ type liveFile struct {
 	initialized  bool
 	hasEarlier   bool
 	wantedTurns  int
+	windowTurns  int
+	familyTurns  int
 	loadedWindow int
 	wantedSince  time.Time
 	loadedSince  time.Time
@@ -46,7 +48,7 @@ func liveID(path string) string {
 	return name
 }
 func newLiveFile(path string) *liveFile {
-	return &liveFile{path: path, session: newLiveSession(liveID(path)), wantedTurns: 10}
+	return &liveFile{path: path, session: newLiveSession(liveID(path)), wantedTurns: 10, windowTurns: 10}
 }
 
 func (f *liveFile) setLocation(path string, archived bool) {
@@ -76,10 +78,11 @@ func (f *liveFile) read() error {
 		reset = true
 	}
 	if reset {
-		wanted, since, archived := f.wantedTurns, f.wantedSince, f.archived
+		wanted, base, family, since, archived := f.wantedTurns, f.windowTurns, f.familyTurns, f.wantedSince, f.archived
 		*f = *newLiveFile(f.path)
 		f.archived = archived
 		f.wantedTurns = wanted
+		f.windowTurns, f.familyTurns = base, family
 		f.wantedSince = since
 		f.session.warn("日志已重建或截断，统计已从文件重新建立")
 	}
@@ -176,6 +179,9 @@ type liveMonitor struct {
 	wsDiagnostics        map[string]liveWSDiagnostic
 	wsDiagnosticSince    time.Time
 	wsDiagnosticsTrimmed bool
+	familyFiles          map[string]liveFamilyFile
+	familyViews          map[string]liveFamilyRequest
+	familyReady          bool
 }
 
 func newLiveMonitor(home string, days int, showArchived bool, interval time.Duration) *liveMonitor {
@@ -189,6 +195,7 @@ func (m *liveMonitor) discover(now time.Time) {
 		archived bool
 	}
 	seen := map[string]discoveredFile{}
+	familySeen := map[string]bool{}
 	known := map[string][]*liveFile{}
 	for _, f := range m.files {
 		id := liveID(f.path)
@@ -218,6 +225,15 @@ func (m *liveMonitor) discover(now time.Time) {
 			if err != nil {
 				return nil
 			}
+			if m.familyFiles != nil {
+				familySeen[path] = true
+				meta, exists := m.familyFiles[path]
+				if !exists || meta.Info.Size() != info.Size() || !meta.Info.ModTime().Equal(info.ModTime()) || !os.SameFile(meta.Info, info) {
+					meta = readLiveFamilyFile(path, info, root == "archived_sessions")
+				}
+				meta.Info, meta.Archived = info, root == "archived_sessions"
+				m.familyFiles[path] = meta
+			}
 			if m.days > 0 && info.ModTime().Before(cutoff) && len(known[liveID(path)]) == 0 {
 				return nil
 			}
@@ -227,6 +243,29 @@ func (m *liveMonitor) discover(now time.Time) {
 		if err != nil {
 			m.addError(err.Error())
 		}
+	}
+	if m.familyFiles != nil {
+		for path := range m.familyFiles {
+			if !familySeen[path] {
+				delete(m.familyFiles, path)
+			}
+		}
+		parents := m.familyParents(m.sessions())
+		wanted := map[string]bool{}
+		for id, request := range m.familyViews {
+			if now.Sub(request.At) <= 20*time.Second {
+				_, members, _ := liveFamilyTree(id, parents)
+				for member := range members {
+					wanted[member] = true
+				}
+			}
+		}
+		for path, meta := range m.familyFiles {
+			if wanted[meta.ID] {
+				seen[path] = discoveredFile{info: meta.Info, archived: meta.Archived}
+			}
+		}
+		m.familyReady = true
 	}
 	for path, found := range seen {
 		f := m.files[path]
@@ -280,6 +319,7 @@ func (m *liveMonitor) poll() {
 	if m.discovered.IsZero() || now.Sub(m.discovered) >= 5*time.Second {
 		m.discover(now)
 	}
+	m.updateFamilyScope(now)
 	files := make([]*liveFile, 0, len(m.files))
 	for _, f := range m.files {
 		f.requestSince(m.trendSince)
