@@ -436,7 +436,7 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 		forecast := forecastQuota(group, r, from, to, data.PendingFiles)
 		data.Forecast = &forecast
 		target := quotaTargetMix(data.Estimate.Target, displayRecords, group.Bucket, data.Rules)
-		estimate, changes := estimateQuota(group, records, data.Rules, target, data.PendingFiles)
+		estimate, changes := estimateQuota(group, displayRecords, data.Rules, target, from, data.PendingFiles)
 		data.Estimate = estimate
 		for i := len(changes) - 1; i >= 0; i-- {
 			if !changes[i].At.Before(from) {
@@ -517,12 +517,14 @@ func quotaUsageBetween(records []liveQuotaRecord, bucket string, from, to time.T
 	return credits, priced, unpriced, unknown, longCount, models
 }
 
-func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules liveQuotaRules, target liveQuotaTarget, pending int) (liveQuotaEstimate, []liveQuotaChange) {
+func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules liveQuotaRules, target liveQuotaTarget, from time.Time, pending int) (liveQuotaEstimate, []liveQuotaChange) {
 	e := liveQuotaEstimate{Status: "insufficient", Target: target, Notes: []string{}, Models: []liveQuotaModelCost{}}
 	changes := []liveQuotaChange{}
 	points := group.Points
 	anchor := points[0]
-	currentStart, currentEnd := points[0], points[0]
+	latest := points[len(points)-1]
+	models := map[string]liveQuotaModelCost{}
+	calibrationRuns, lastCalibrationSegment := 0, -1
 	baselineReady := false
 	staleCount := 0
 	for _, point := range points[1:] {
@@ -531,43 +533,75 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 			continue
 		}
 		if point.Segment != anchor.Segment {
-			anchor, currentStart, currentEnd = point, point, point
+			anchor = point
 			baselineReady = false
 			continue
 		}
 		if point.UsedPercent <= anchor.UsedPercent {
 			continue
 		}
-		cost, priced, unpriced, _, _, _ := quotaUsageBetween(records, group.Bucket, anchor.At, point.At, rules)
+		if anchor.At.Before(from) {
+			// Earlier points preserve the segment baseline, but contribute no usage.
+			anchor, baselineReady = point, true
+			continue
+		}
+		cost, priced, unpriced, unknown, longCount, breakdown := quotaUsageBetween(records, group.Bucket, anchor.At, point.At, rules)
 		delta := point.UsedPercent - anchor.UsedPercent
 		change := liveQuotaChange{At: point.At, FromPercent: anchor.UsedPercent, ToPercent: point.UsedPercent, DeltaPercent: delta, Credits: cost, Priced: priced, Unpriced: unpriced, Segment: point.Segment}
 		if !baselineReady {
 			// Collected history or a new segment may start partway through a step.
 			// Its first observed rise establishes a baseline, not a full interval.
 			change.Excluded = true
-			currentStart, currentEnd = point, point
 			baselineReady = true
-		} else {
-			if cost > 0 {
-				change.Full = quotaPointer(cost * 100 / delta)
+		} else if cost > 0 {
+			change.Full = quotaPointer(cost * 100 / delta)
+			compatible := point.WindowMinutes == latest.WindowMinutes &&
+				(point.PlanType == "" || latest.PlanType == "" || point.PlanType == latest.PlanType)
+			if compatible {
+				if e.Intervals == 0 {
+					e.From = anchor.At
+				}
+				if lastCalibrationSegment != point.Segment || !e.To.Equal(anchor.At) {
+					calibrationRuns++
+					lastCalibrationSegment = point.Segment
+				}
+				e.To = point.At
+				e.DeltaPercent += delta
+				e.Credits += cost
+				e.Priced += priced
+				e.Unpriced += unpriced
+				e.UnknownTier += unknown
+				e.LongContext += longCount
+				e.Intervals++
+				for _, model := range breakdown {
+					key := model.Model + "/" + model.Tier
+					total := models[key]
+					total.Model, total.Tier = model.Model, model.Tier
+					total.Responses += model.Responses
+					total.Input += model.Input
+					total.Cached += model.Cached
+					total.Output += model.Output
+					total.Credits += model.Credits
+					total.LongContext += model.LongContext
+					total.Unpriced += model.Unpriced
+					models[key] = total
+				}
 			}
-			currentEnd = point
 		}
 		changes = append(changes, change)
 		anchor = point
 	}
-	latest := points[len(points)-1]
-	e.From, e.To = currentStart.At, currentEnd.At
-	e.DeltaPercent = currentEnd.UsedPercent - currentStart.UsedPercent
-	if e.DeltaPercent > 0 {
-		e.Credits, e.Priced, e.Unpriced, e.UnknownTier, e.LongContext, e.Models = quotaUsageBetween(records, group.Bucket, e.From, e.To, rules)
+	for _, model := range models {
+		e.Models = append(e.Models, model)
 	}
-	for _, change := range changes {
-		if change.Segment == latest.Segment && !change.Excluded {
-			e.Intervals++
+	sort.Slice(e.Models, func(i, j int) bool {
+		a, b := e.Models[i], e.Models[j]
+		if a.Credits == b.Credits {
+			return a.Model+a.Tier < b.Model+b.Tier
 		}
-	}
-	e.Notes = append(e.Notes, "额度校准使用截至所选结束时间、已采集历史中的最新连续额度段，不随图表起点滚动；曲线、变化明细和混合 token 比例仍使用图表时间范围。仅使用已采集记录，不代表已覆盖整个额度周期。重置、未恢复的百分比回退、周期变化或超过 6 小时的上报空窗重新建立基线。每段首次正向百分比变化仅建立基线，之前的起始区间可能不完整，保留明细但不参与积分、百分点和有效区间校准。", "等效积分是模型加权后的本机估计，不是服务端公开的订阅积分余额；假设这些日志属于同一账号，且涵盖同期扣量。其他设备、云任务和共享功能的消耗会使估计偏低。", "百分点上报可能取整并存在延迟；区间仅反映端点合计约 ±1 个百分点的分辨率，不是统计置信区间。")
+		return a.Credits > b.Credits
+	})
+	e.Notes = append(e.Notes, "额度校准汇总上方所选起止时间内、同额度桶和周期长度、无已知套餐冲突的连续段内有计价消耗的完整区间，按百分点加权。合并估算假设这些区间的满额相近。图上拖选只影响耗尽预测。仅使用已采集记录，不代表已覆盖整个额度周期。重置、未恢复的百分比回退、周期变化或超过 6 小时的上报空窗重新建立基线。每段首次正向百分比变化仅建立基线，之前的起始区间可能不完整，保留明细但不参与积分、百分点和有效区间校准。", "等效积分是模型加权后的本机估计，不是服务端公开的订阅积分余额；假设这些日志属于同一账号，且涵盖同期扣量。其他设备、云任务和共享功能的消耗会使估计偏低。", "百分点上报可能取整并存在延迟；区间仅反映每组相邻校准区间的端点合计约 ±1 个百分点的分辨率，不是统计置信区间。")
 	if pending > 0 {
 		// Backfill is explicit in the UI; do not silently treat missing history as zero.
 		e.Notes = append(e.Notes, "历史仍在补读，目前的用量覆盖不完整，估算会随补读变化。")
@@ -589,16 +623,17 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 	}
 	if e.DeltaPercent > 0 && e.Credits > 0 {
 		full := e.Credits * 100 / e.DeltaPercent
-		e.Full, e.FullLow = quotaPointer(full), quotaPointer(e.Credits*100/(e.DeltaPercent+1))
-		if e.DeltaPercent > 1 && e.Unpriced == 0 {
-			e.FullHigh = quotaPointer(e.Credits * 100 / (e.DeltaPercent - 1))
+		precision := float64(calibrationRuns)
+		e.Full, e.FullLow = quotaPointer(full), quotaPointer(e.Credits*100/(e.DeltaPercent+precision))
+		if e.DeltaPercent > precision && e.Unpriced == 0 {
+			e.FullHigh = quotaPointer(e.Credits * 100 / (e.DeltaPercent - precision))
 		}
 		e.Used = quotaPointer(full * latest.UsedPercent / 100)
 		if !latest.Expired {
 			e.Remaining = quotaPointer(full * latest.RemainingPercent / 100)
 		}
 		e.Status = "provisional"
-		if e.DeltaPercent >= 3 && e.Unpriced == 0 && pending == 0 && !latest.Expired {
+		if e.DeltaPercent >= precision+2 && e.Unpriced == 0 && pending == 0 && !latest.Expired {
 			e.Status = "estimated"
 		}
 	} else {

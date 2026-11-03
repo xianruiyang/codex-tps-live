@@ -62,8 +62,9 @@ func forecastQuota(group *liveQuotaSeries, r *http.Request, from, to time.Time, 
 		if p.Stale || p.At.Before(f.RangeFrom) || p.At.After(f.RangeTo) {
 			continue
 		}
-		if p.Segment != latest.Segment {
-			f.Status, f.Message = "discontinuous", "参考区间跨越重置、回退或上报空窗，请在图上选取当前连续段内的区间。"
+		// A historical segment can supply the rate for the current quota balance.
+		if first != nil && p.Segment != first.Segment {
+			f.Status, f.Message = "discontinuous", "参考区间跨越重置、回退或上报空窗，请在同一连续段内选区，可使用历史额度段。"
 			return f
 		}
 		if first == nil {
@@ -91,7 +92,7 @@ func forecastQuota(group *liveQuotaSeries, r *http.Request, from, to time.Time, 
 	at := latest.At.Add(time.Duration(seconds * float64(time.Second)))
 	f.ExhaustsAt = &at
 	f.ResetsFirst = latest.ResetsAt > 0 && !at.Before(time.Unix(latest.ResetsAt, 0))
-	f.Status, f.Message = "estimated", "按参考区间的平均消耗速率线性外推；未来使用强度变化会改变结果。"
+	f.Status, f.Message = "estimated", "将参考区间的平均消耗速率应用于最新剩余额度；未来使用强度变化会改变结果。"
 	if f.DeltaPercent < 3 || pending > 0 {
 		f.Status, f.Message = "provisional", "暂定预测：百分点变化较少或历史仍在补读，结果可能明显波动。"
 	}
