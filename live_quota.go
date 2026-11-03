@@ -312,9 +312,13 @@ func quotaShortRollback(points []liveQuotaPoint, index int, accepted liveQuotaPo
 	}
 	if quotaWindowChanged(accepted, current) {
 		// An isolated rollback can also carry a slightly different reset timestamp.
-		// Require the very next report to confirm the original window and usage.
-		if index+1 >= len(points) || accepted.ResetsAt <= 0 ||
-			math.Abs(float64(current.ResetsAt-accepted.ResetsAt)) > 300 ||
+		// Preserve zero usage and reports near or after the scheduled reset,
+		// even when an old-window snapshot follows immediately.
+		const resetDrift = 5 * time.Minute
+		if index+1 >= len(points) || accepted.ResetsAt <= 0 || current.ResetsAt <= 0 ||
+			current.UsedPercent <= 0 || !current.At.Before(time.Unix(accepted.ResetsAt, 0).Add(-resetDrift)) ||
+			!current.At.Before(time.Unix(current.ResetsAt, 0).Add(-resetDrift)) ||
+			math.Abs(float64(current.ResetsAt-accepted.ResetsAt)) > resetDrift.Seconds() ||
 			current.WindowMinutes != accepted.WindowMinutes ||
 			(current.PlanType != "" && accepted.PlanType != "" && current.PlanType != accepted.PlanType) ||
 			current.At.Sub(accepted.At) > 2*time.Minute {
