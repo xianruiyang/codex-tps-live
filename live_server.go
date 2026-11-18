@@ -21,10 +21,10 @@ import (
 	"time"
 )
 
-//go:embed web/index.html web/family.html web/trends.html web/quota.html web/nodes.html web/node_plans.html web/ws_diagnostics.html
+//go:embed web/index.html web/family.html web/trends.html web/quota.html web/nodes.html web/node_plans.html web/ws_diagnostics.html web/traffic.html
 var liveAssets embed.FS
 
-const liveVersion = "0.20.11"
+const liveVersion = "0.22.2"
 
 // RunLive starts a loopback-only dashboard. Codex logs remain read-only. Only
 // authorized node tests and their saved continuations make outbound probes.
@@ -84,6 +84,8 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	defer func() { stop(); nodes.close(); plans.close() }()
 	proxyDiagnostics := newLiveWSProxyService(*clashHome)
 	defer proxyDiagnostics.close()
+	traffic := openLiveTraffic(ctx, monitor, *clashHome, *dataDir)
+	defer traffic.close()
 	go func() {
 		monitor.poll()
 		ticker := time.NewTicker(*interval)
@@ -101,6 +103,7 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 	nodes.register(mux)
 	plans.register(mux)
 	proxyDiagnostics.register(mux)
+	traffic.register(mux)
 	mux.HandleFunc("/ws-diagnostics", func(w http.ResponseWriter, r *http.Request) {
 		page, _ := liveAssets.ReadFile("web/ws_diagnostics.html")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

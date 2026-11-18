@@ -31,12 +31,25 @@ func (s *liveNodeService) prepareJob(options liveNodeOptions, requireEngine bool
 	}
 	testSeen := map[string]bool{}
 	for _, test := range options.Tests {
-		if (test != "clash" && test != "http" && test != "websocket") || testSeen[test] {
+		if (test != "clash" && test != "http" && test != "websocket" && !liveNodeBandwidth(test)) || testSeen[test] {
 			return nil, http.StatusBadRequest, errors.New("测速项目无效或重复")
 		}
 		testSeen[test] = true
-		if requireEngine && test != "clash" && inv.curl == "" {
+		if requireEngine && (test == "http" || test == "websocket") && inv.curl == "" {
 			return nil, http.StatusBadRequest, errors.New("Codex HTTP / WebSocket 需要系统 curl.exe")
+		}
+	}
+	if testSeen["download"] || testSeen["upload"] {
+		setLiveNodeBandwidthDefaults(&options)
+		if options.BandwidthSeconds < 1 || options.BandwidthSeconds > 120 {
+			return nil, http.StatusBadRequest, errors.New("带宽测试时长须为 1–120 秒")
+		}
+		if options.BandwidthMiB < 1 || options.BandwidthMiB > 16 {
+			return nil, http.StatusBadRequest, errors.New("带宽测试流量上限须为 1–16 MiB")
+		}
+		if (testSeen["download"] && !validLiveClashURL(options.DownloadURL)) ||
+			(testSeen["upload"] && !validLiveClashURL(options.UploadURL)) {
+			return nil, http.StatusBadRequest, errors.New("带宽测速地址必须是无用户名和密码的 HTTP / HTTPS URL")
 		}
 	}
 	if testSeen["clash"] {

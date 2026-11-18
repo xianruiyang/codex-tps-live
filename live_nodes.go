@@ -31,31 +31,47 @@ var liveNodeEndpoints = map[string]string{
 }
 
 type liveNodeOptions struct {
-	IDs             []string `json:"ids"`
-	Rounds          int      `json:"rounds"`
-	Workers         int      `json:"workers"`
-	Timeout         int      `json:"timeout"`
-	Tests           []string `json:"tests"`
-	ClashURL        string   `json:"clash_url,omitempty"`
-	ClashUnified    *bool    `json:"clash_unified,omitempty"`
-	Smart           bool     `json:"smart"`
-	ClashMaxDelayMS int      `json:"clash_max_delay_ms"`
+	IDs              []string `json:"ids"`
+	Rounds           int      `json:"rounds"`
+	Workers          int      `json:"workers"`
+	Timeout          int      `json:"timeout"`
+	Tests            []string `json:"tests"`
+	ClashURL         string   `json:"clash_url,omitempty"`
+	ClashUnified     *bool    `json:"clash_unified,omitempty"`
+	Smart            bool     `json:"smart"`
+	ClashMaxDelayMS  int      `json:"clash_max_delay_ms"`
+	DownloadURL      string   `json:"download_url,omitempty"`
+	UploadURL        string   `json:"upload_url,omitempty"`
+	BandwidthSeconds int      `json:"bandwidth_seconds,omitempty"`
+	BandwidthMiB     int      `json:"bandwidth_mib,omitempty"`
 }
 
 type liveNodeResult struct {
-	Node     string    `json:"node"`
-	Endpoint string    `json:"endpoint"`
-	Round    int       `json:"round"`
-	Started  time.Time `json:"started"`
-	Outcome  string    `json:"outcome"`
-	Status   int       `json:"http_status"`
-	TTFB     *float64  `json:"ttfb_ms"`
-	Delay    *float64  `json:"delay_ms,omitempty"`
-	TLS      *float64  `json:"tls_ms"`
-	Total    float64   `json:"total_ms"`
-	Exit     int       `json:"curl_exit"`
-	Upgraded bool      `json:"websocket_connected"`
-	Note     string    `json:"note,omitempty"`
+	Node             string             `json:"node"`
+	Endpoint         string             `json:"endpoint"`
+	Round            int                `json:"round"`
+	Started          time.Time          `json:"started"`
+	Outcome          string             `json:"outcome"`
+	Status           int                `json:"http_status"`
+	TTFB             *float64           `json:"ttfb_ms"`
+	Delay            *float64           `json:"delay_ms,omitempty"`
+	TLS              *float64           `json:"tls_ms"`
+	Total            float64            `json:"total_ms"`
+	Exit             int                `json:"curl_exit"`
+	Upgraded         bool               `json:"websocket_connected"`
+	Note             string             `json:"note,omitempty"`
+	BandwidthMbps    *float64           `json:"bandwidth_mbps,omitempty"`
+	TransferredBytes int64              `json:"transferred_bytes,omitempty"`
+	TransferSeconds  float64            `json:"transfer_seconds,omitempty"`
+	BandwidthShort   bool               `json:"bandwidth_short,omitempty"`
+	Preflight        *liveNodePreflight `json:"preflight,omitempty"`
+}
+
+type liveNodePreflight struct {
+	Passed  bool    `json:"passed"`
+	Status  int     `json:"http_status"`
+	Bytes   int64   `json:"payload_bytes"`
+	Seconds float64 `json:"seconds"`
 }
 
 type liveNodeExclusion struct {
@@ -182,7 +198,7 @@ func (s *liveNodeService) register(mux *http.ServeMux) {
 		w.Header().Set("Content-Disposition", `attachment; filename="codex-node-tests.csv"`)
 		_, _ = w.Write([]byte{0xef, 0xbb, 0xbf})
 		writer := csv.NewWriter(w)
-		_ = writer.Write([]string{"订阅", "节点", "协议类型", "测试入口", "轮次", "时间", "结果", "HTTP状态（Clash为内核接口状态）", "首响应毫秒", "TLS毫秒", "总耗时毫秒", "WS已升级", "Clash原生延迟毫秒", "智能判定或跳过原因"})
+		_ = writer.Write([]string{"订阅", "节点", "协议类型", "测试入口", "轮次", "时间", "结果", "HTTP状态（Clash为内核接口状态）", "首响应毫秒", "TLS毫秒", "总耗时毫秒", "WS已升级", "Clash原生延迟毫秒", "智能判定或跳过原因", "单连接带宽Mbps", "传输字节", "传输秒数"})
 		nodes := map[string]liveNode{}
 		for _, node := range job.Nodes {
 			nodes[node.ID] = node
@@ -199,7 +215,7 @@ func (s *liveNodeService) register(mux *http.ServeMux) {
 			if row.Outcome == "skipped" {
 				status, total = "", ""
 			}
-			_ = writer.Write([]string{job.Subscriptions[node.Subscription], node.Name, node.Type, row.Endpoint, strconv.Itoa(row.Round), row.Started.Format(time.RFC3339), row.Outcome, status, text(row.TTFB), text(row.TLS), total, strconv.FormatBool(row.Upgraded), text(row.Delay), row.Note})
+			_ = writer.Write([]string{job.Subscriptions[node.Subscription], node.Name, node.Type, row.Endpoint, strconv.Itoa(row.Round), row.Started.Format(time.RFC3339), row.Outcome, status, text(row.TTFB), text(row.TLS), total, strconv.FormatBool(row.Upgraded), text(row.Delay), row.Note, text(row.BandwidthMbps), strconv.FormatInt(row.TransferredBytes, 10), strconv.FormatFloat(row.TransferSeconds, 'f', 3, 64)})
 		}
 		writer.Flush()
 	})
@@ -299,9 +315,19 @@ func (s *liveNodeService) run(ctx context.Context, inv liveNodeInventory, select
 	s.mu.Lock()
 	job.Status, job.Message = "running", "正在独立探测；不会切换当前节点"
 	s.mu.Unlock()
+	bandwidthGate := make(chan struct{}, 1)
 	probe := func(index int, endpoint string, round int) liveNodeResult {
 		if endpoint == "clash" {
 			return probeLiveClashNode(ctx, controller, secret, aliases[selected[index].public.ID], selected[index].public.ID, round, job.Options.Timeout, job.Options.ClashURL)
+		}
+		if liveNodeBandwidth(endpoint) {
+			select {
+			case bandwidthGate <- struct{}{}:
+				defer func() { <-bandwidthGate }()
+			case <-ctx.Done():
+				return liveNodeResult{Node: selected[index].public.ID, Endpoint: endpoint, Round: round, Outcome: "cancelled"}
+			}
+			return probeLiveNodeBandwidth(ctx, ports[index], selected[index].public.ID, endpoint, round, job.Options)
 		}
 		return probeLiveNode(ctx, inv.curl, root, ports[index], selected[index].public.ID, endpoint, round, job.Options.Timeout)
 	}

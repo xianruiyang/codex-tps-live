@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,35 +43,43 @@ type nodePlan struct {
 	Message   string          `json:"message"`
 }
 type nodePlanPoint struct {
-	Run      string      `json:"run"`
-	Node     nodePlanRef `json:"node"`
-	Test     string      `json:"test"`
-	At       time.Time   `json:"at"`
-	Revision int         `json:"revision"`
-	Success  int         `json:"success"`
-	Failure  int         `json:"failure"`
-	Skipped  int         `json:"skipped"`
-	Values   []float64   `json:"values,omitempty"`
-	Outcome  string      `json:"outcome"`
-	Note     string      `json:"note,omitempty"`
-	Median   *float64    `json:"median_ms"`
-	Interval int         `json:"interval_seconds"`
+	Run             string      `json:"run"`
+	Node            nodePlanRef `json:"node"`
+	Test            string      `json:"test"`
+	At              time.Time   `json:"at"`
+	Revision        int         `json:"revision"`
+	Success         int         `json:"success"`
+	Failure         int         `json:"failure"`
+	Skipped         int         `json:"skipped"`
+	Values          []float64   `json:"values,omitempty"`
+	Outcome         string      `json:"outcome"`
+	Note            string      `json:"note,omitempty"`
+	Median          *float64    `json:"median_ms"`
+	Interval        int         `json:"interval_seconds"`
+	BandwidthValues []float64   `json:"bandwidth_values,omitempty"`
+	BandwidthMedian *float64    `json:"median_mbps,omitempty"`
 }
 type nodePlanStats struct {
-	Node      nodePlanRef `json:"node"`
-	Success   int         `json:"success"`
-	Failure   int         `json:"failure"`
-	Skipped   int         `json:"skipped"`
-	Samples   int         `json:"samples"`
-	Rate      *float64    `json:"success_rate"`
-	Coverage  *float64    `json:"coverage"`
-	Median    *float64    `json:"median_ms"`
-	P95       *float64    `json:"p95_ms"`
-	Deviation *float64    `json:"deviation_ms"`
-	Streak    int         `json:"failure_streak"`
-	Longest   int         `json:"longest_failure_streak"`
-	Latest    string      `json:"latest"`
-	LatestAt  *time.Time  `json:"latest_at,omitempty"`
+	Node               nodePlanRef `json:"node"`
+	Success            int         `json:"success"`
+	Failure            int         `json:"failure"`
+	Skipped            int         `json:"skipped"`
+	Samples            int         `json:"samples"`
+	Rate               *float64    `json:"success_rate"`
+	Coverage           *float64    `json:"coverage"`
+	Median             *float64    `json:"median_ms"`
+	P95                *float64    `json:"p95_ms"`
+	Deviation          *float64    `json:"deviation_ms"`
+	Streak             int         `json:"failure_streak"`
+	Longest            int         `json:"longest_failure_streak"`
+	Latest             string      `json:"latest"`
+	LatestAt           *time.Time  `json:"latest_at,omitempty"`
+	BandwidthMean      *float64    `json:"mean_mbps,omitempty"`
+	BandwidthMedian    *float64    `json:"median_mbps,omitempty"`
+	BandwidthP95       *float64    `json:"p95_mbps,omitempty"`
+	BandwidthDeviation *float64    `json:"stddev_mbps,omitempty"`
+	BandwidthMin       *float64    `json:"min_mbps,omitempty"`
+	BandwidthMax       *float64    `json:"max_mbps,omitempty"`
 }
 type nodePlanManager struct {
 	svc            *liveNodeService
@@ -296,6 +305,18 @@ func (m *nodePlanManager) startLocked(p *nodePlan) error {
 		m.saveState(p)
 		return errors.New(p.Message)
 	}
+	// Upgrade defaults before a new batch so its revision identifies the
+	// actual endpoint and budget. Interrupted batches keep their revision.
+	upgraded := *p
+	setLiveNodeBandwidthDefaults(&upgraded.Options)
+	if !reflect.DeepEqual(upgraded.Options, p.Options) {
+		upgraded.Revision++
+		upgraded.Updated = time.Now()
+		if err := m.persist(&upgraded); err != nil {
+			return err
+		}
+		*p = upgraded
+	}
 	options := p.Options
 	options.IDs = ids
 	snapshot := *p
@@ -351,14 +372,20 @@ func (m *nodePlanManager) complete(snapshot nodePlan, job *liveNodeJob) {
 		}
 		if row.Outcome == "skipped" {
 			point.Skipped++
-		} else if row.Outcome == "clash_ok" || row.Outcome == "auth_reached" || row.Outcome == "upgrade_accepted" {
+		} else if row.Outcome == "clash_ok" || row.Outcome == "auth_reached" || row.Outcome == "upgrade_accepted" || row.Outcome == "bandwidth_ok" {
 			point.Success++
-			value := row.TTFB
-			if row.Endpoint == "clash" {
-				value = row.Delay
-			}
-			if value != nil {
-				point.Values = append(point.Values, *value)
+			if liveNodeBandwidth(row.Endpoint) {
+				if row.BandwidthMbps != nil {
+					point.BandwidthValues = append(point.BandwidthValues, *row.BandwidthMbps)
+				}
+			} else {
+				value := row.TTFB
+				if row.Endpoint == "clash" {
+					value = row.Delay
+				}
+				if value != nil {
+					point.Values = append(point.Values, *value)
+				}
 			}
 		} else {
 			point.Failure++
@@ -367,6 +394,8 @@ func (m *nodePlanManager) complete(snapshot nodePlan, job *liveNodeJob) {
 	for _, point := range points {
 		sort.Float64s(point.Values)
 		point.Median = planQuantile(point.Values, .5)
+		sort.Float64s(point.BandwidthValues)
+		point.BandwidthMedian = planQuantile(point.BandwidthValues, .5)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -663,7 +692,7 @@ func (m *nodePlanManager) historyParameters(r *http.Request) (*nodePlan, string,
 	if test == "" {
 		test = copy.Options.Tests[0]
 	}
-	if test != "clash" && test != "http" && test != "websocket" {
+	if test != "clash" && test != "http" && test != "websocket" && !liveNodeBandwidth(test) {
 		return nil, "", 0, time.Time{}, time.Time{}, errors.New("测速项目无效")
 	}
 	to := time.Now()
@@ -727,7 +756,11 @@ func (m *nodePlanManager) history(w http.ResponseWriter, r *http.Request) {
 			s.Streak++
 			s.Longest = max(s.Longest, s.Streak)
 		}
-		values[point.Node.Key] = append(values[point.Node.Key], point.Values...)
+		if liveNodeBandwidth(test) {
+			values[point.Node.Key] = append(values[point.Node.Key], point.BandwidthValues...)
+		} else {
+			values[point.Node.Key] = append(values[point.Node.Key], point.Values...)
+		}
 		series[point.Node.Key] = append(series[point.Node.Key], point)
 	}
 	all := []nodePlanStats{}
@@ -756,6 +789,12 @@ func (m *nodePlanManager) history(w http.ResponseWriter, r *http.Request) {
 			}
 			deviation := math.Sqrt(variance / float64(len(v)))
 			s.Deviation = &deviation
+			if liveNodeBandwidth(test) {
+				s.BandwidthMean = &mean
+				s.BandwidthMedian, s.BandwidthP95, s.BandwidthDeviation = s.Median, s.P95, s.Deviation
+				s.BandwidthMin, s.BandwidthMax = quotaPointer(v[0]), quotaPointer(v[len(v)-1])
+				s.Median, s.P95, s.Deviation = nil, nil, nil
+			}
 		}
 		all = append(all, *s)
 	}
@@ -779,6 +818,9 @@ func (m *nodePlanManager) history(w http.ResponseWriter, r *http.Request) {
 		if a.P95 != nil && b.P95 != nil && *a.P95 != *b.P95 {
 			return *a.P95 < *b.P95
 		}
+		if a.BandwidthMedian != nil && b.BandwidthMedian != nil && *a.BandwidthMedian != *b.BandwidthMedian {
+			return *a.BandwidthMedian > *b.BandwidthMedian
+		}
 		if a.Node.Name == b.Node.Name {
 			return a.Node.Key < b.Node.Key
 		}
@@ -797,6 +839,7 @@ func (m *nodePlanManager) history(w http.ResponseWriter, r *http.Request) {
 			if aggregate == nil {
 				copy := point
 				copy.Values = append([]float64{}, point.Values...)
+				copy.BandwidthValues = append([]float64{}, point.BandwidthValues...)
 				buckets[bucket] = &copy
 				order = append(order, bucket)
 			} else {
@@ -805,6 +848,7 @@ func (m *nodePlanManager) history(w http.ResponseWriter, r *http.Request) {
 				aggregate.Failure += point.Failure
 				aggregate.Skipped += point.Skipped
 				aggregate.Values = append(aggregate.Values, point.Values...)
+				aggregate.BandwidthValues = append(aggregate.BandwidthValues, point.BandwidthValues...)
 			}
 		}
 		compressed := []nodePlanPoint{}
@@ -813,6 +857,9 @@ func (m *nodePlanManager) history(w http.ResponseWriter, r *http.Request) {
 			sort.Float64s(point.Values)
 			point.Median = planQuantile(point.Values, .5)
 			point.Values = nil
+			sort.Float64s(point.BandwidthValues)
+			point.BandwidthMedian = planQuantile(point.BandwidthValues, .5)
+			point.BandwidthValues = nil
 			compressed = append(compressed, *point)
 		}
 		series[key] = compressed
@@ -834,13 +881,17 @@ func (m *nodePlanManager) export(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="node-plan-history.csv"`)
 	w.Write([]byte{0xef, 0xbb, 0xbf})
 	writer := csv.NewWriter(w)
-	writer.Write([]string{"计划", "配置版本", "时间", "订阅", "节点", "项目", "成功", "失败", "跳过", "中位数毫秒", "最近结果", "判定原因"})
+	writer.Write([]string{"计划", "配置版本", "时间", "订阅", "节点", "项目", "成功", "失败", "跳过", "中位数毫秒", "最近结果", "判定原因", "中位数Mbps"})
 	for _, point := range points {
 		latency := ""
 		if point.Median != nil {
 			latency = strconv.FormatFloat(*point.Median, 'f', 2, 64)
 		}
-		writer.Write([]string{safeLiveCSV(p.Name), strconv.Itoa(point.Revision), point.At.Format(time.RFC3339), safeLiveCSV(point.Node.SubscriptionName), safeLiveCSV(point.Node.Name), test, strconv.Itoa(point.Success), strconv.Itoa(point.Failure), strconv.Itoa(point.Skipped), latency, point.Outcome, safeLiveCSV(point.Note)})
+		bandwidth := ""
+		if point.BandwidthMedian != nil {
+			bandwidth = strconv.FormatFloat(*point.BandwidthMedian, 'f', 2, 64)
+		}
+		writer.Write([]string{safeLiveCSV(p.Name), strconv.Itoa(point.Revision), point.At.Format(time.RFC3339), safeLiveCSV(point.Node.SubscriptionName), safeLiveCSV(point.Node.Name), test, strconv.Itoa(point.Success), strconv.Itoa(point.Failure), strconv.Itoa(point.Skipped), latency, point.Outcome, safeLiveCSV(point.Note), bandwidth})
 	}
 	writer.Flush()
 }

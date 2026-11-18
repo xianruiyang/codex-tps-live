@@ -9,6 +9,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -21,46 +23,19 @@ jobs:
             "$taskHash  $([System.IO.Path]::GetFileName($taskAsset))"
           }
           [System.IO.File]::WriteAllText((Join-Path $PWD 'SHA256SUMS'), (($taskChecksums -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+      - name: Read release notes from tag
+        shell: pwsh
+        run: |
+          $taskNotes = git for-each-ref --format='%(if:equals=tag)%(objecttype)%(then)%(contents)%(end)' $env:GITHUB_REF
+          if ($LASTEXITCODE -ne 0) { throw "Could not read release tag notes." }
+          if ($taskNotes) {
+            [System.IO.File]::WriteAllText((Join-Path $PWD 'release-notes.md'), ($taskNotes -join "`n"))
+          }
       - uses: softprops/action-gh-release@v2
         with:
           name: Codex TPS Live ${{ github.ref_name }}
-          body: |
-            Windows 10/11 x64 本地 Codex 用量与 TPS 监控工具。
-
-            本次更新：
-            - 新增 gpt-6.1-terra 的官方积分计价、Fast 倍率和额度容量估算；额度页按模型禁用不支持的 ultra fast。
-            - 新增 Clash Verge 节点测速：按订阅分组、卡片多选、地区筛选，Clash / Codex HTTP / WebSocket 可自由组合。
-            - 智能测速支持可配置的 Clash 延迟阈值和分项目淘汰；整节点被排除时自动取消即时页勾选。
-            - 新增定时测速计划、稳定性排行与对比曲线，支持列升降序、对比全选/全不选、图例显示开关，以及选中后的缩放和平移。
-            - 测速进度逐项保存，服务重启后续跑未完成项，保留智能排除状态；主动停止的批次不会复活。停止时尚未完成或未落盘的请求会重试。
-            - 修复额度短时回退被误切段，导致看似连续的选区无法估算耗尽时间。
-            - 改进逐次 TTFT、可见/实际 TPS、HTTP/WebSocket 协议显示，以及明细表的固定表头和滚动体验。
-            - 更新中英文使用说明、数据位置和迁移说明。
-
-            使用方法：
-            1. 下载下方 Assets 中的 `codex-tps-live-windows-amd64.zip`。
-            2. 完整解压后双击 `启动监控.cmd`。
-            3. 在 `http://127.0.0.1:32555` 使用本地面板。
-
-            无需安装 Go、Node 或 Python。ZIP 包含主程序、启动器、可选计时采集器、双语说明和许可证；`SHA256SUMS` 提供 ZIP 与独立 EXE 的校验值。
-
-            普通日志监控离线运行。节点测速、已启用计划及未完成任务续跑会通过独立代理端口访问测速地址，不读取 Codex 凭据、不发起模型生成；401 仅代表到达鉴权入口，不能证明认证后的推理或长连接稳定性。节点测速需要目标电脑的 Clash/Mihomo，HTTP/WebSocket 测试还需要 `curl.exe`。计划和历史保存在本机数据目录，复制程序不会自动迁移个人数据。
-
-            English
-
-            Changes in this release:
-            - Added official gpt-6.1-terra credit rates, Fast multipliers, and quota-capacity estimates, with unsupported Ultrafast choices disabled by model.
-            - Clash Verge node testing with subscription groups, multi-select cards, region filters, and independently selectable Clash/HTTP/WebSocket probes.
-            - Configurable smart exclusions; fully excluded nodes are deselected on the instant-testing page.
-            - Scheduled plans, stability rankings and comparison charts with sortable columns, select-all/none, legend toggles, and selected-chart zoom/pan.
-            - Per-item checkpoints resume unfinished work after a restart while retaining exclusions. Explicitly stopped batches stay stopped; unfinished or unsaved in-flight requests may be retried.
-            - Fixes brief quota rollbacks incorrectly splitting a selected forecasting interval.
-            - Improved per-response TTFT, perceived/actual TPS, transport labels, and sticky usage tables.
-            - Updated Chinese and English usage and data-migration guides.
-
-            Download the portable ZIP, extract all files and run `启动监控.cmd`. The dashboard defaults to `http://127.0.0.1:32555`. No Go, Node or Python installation is needed. The ZIP includes bilingual guides, licenses and the optional timing collector; a standalone EXE and SHA256 checksums are also available.
-
-            Ordinary log monitoring works offline. Requested probes, enabled plans and unfinished-job recovery contact configured endpoints without Codex credentials or generation requests. A JSON 401 proves arrival at the authentication boundary, not authenticated inference or persistent-stream health. Node testing needs local Clash/Mihomo; HTTP/WebSocket probes also need `curl.exe`. Personal history and plans are stored separately from the application files.
+          body_path: release-notes.md
+          body: Download and extract the portable ZIP, then run `启动监控.cmd`. See the bundled Chinese and English guides.
           files: |
             codex-tps-live-windows-amd64.zip
             dist/codex-tps-live.exe

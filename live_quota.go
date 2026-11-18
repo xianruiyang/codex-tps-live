@@ -9,29 +9,35 @@ import (
 	"time"
 )
 
-// Codex credit rates, checked 2026-10-27. These are not API USD prices.
+// Codex credit rates, checked 2026-11-18. These are not API USD prices.
 // Included-plan capacity is inferred from observed quota movement, not a claim
 // that OpenAI denominates a subscription's allowance in purchased credits.
 type liveQuotaModelRate struct {
-	Model  string  `json:"model"`
-	Input  float64 `json:"input"`
-	Cached float64 `json:"cached"`
-	Output float64 `json:"output"`
+	Model     string  `json:"model"`
+	Input     float64 `json:"input"`
+	Cached    float64 `json:"cached"`
+	Output    float64 `json:"output"`
+	Ultrafast bool    `json:"supports_ultrafast"`
 }
 
 var liveQuotaModelRates = []liveQuotaModelRate{
-	{"gpt-6-astra", 250, 25, 1250},
-	{"gpt-6.1-sol", 50, 2.5, 250},
-	{"gpt-6.1-terra", 25, 1.25, 125},
-	{"gpt-6-sol", 50, 5, 250},
-	{"gpt-6-luna", 2.5, .25, 12.5},
-	{"gpt-5.6-sol", 100, 10, 500},
-	{"gpt-5.6-terra", 50, 5, 300},
-	{"gpt-5.6-luna", 5, .5, 30},
-	{"daybreak-blue", 100, 10, 500},
-	{"daybreak-red", 312.5, 31.25, 1875},
-	{"gpt-rosalind-research", 125, 12.5, 625},
+	{Model: "gpt-6.2-astra", Input: 200, Cached: 10, Output: 1000, Ultrafast: true},
+	{Model: "gpt-6.2-sol", Input: 50, Cached: 2.5, Output: 250, Ultrafast: true},
+	{Model: "gpt-6-astra", Input: 250, Cached: 25, Output: 1250, Ultrafast: true},
+	{Model: "gpt-6.1-sol", Input: 50, Cached: 2.5, Output: 250, Ultrafast: true},
+	{Model: "gpt-6.1-terra", Input: 25, Cached: 1.25, Output: 125},
+	{Model: "gpt-6-sol", Input: 50, Cached: 5, Output: 250},
+	{Model: "gpt-6-luna", Input: 2.5, Cached: .25, Output: 12.5},
+	{Model: "gpt-5.6-sol", Input: 100, Cached: 10, Output: 500},
+	{Model: "gpt-5.6-terra", Input: 50, Cached: 5, Output: 300},
+	{Model: "gpt-5.6-luna", Input: 5, Cached: .5, Output: 30},
+	{Model: "daybreak-blue", Input: 100, Cached: 10, Output: 500},
+	{Model: "daybreak-red", Input: 312.5, Cached: 31.25, Output: 1875},
+	{Model: "gpt-rosalind-research", Input: 125, Cached: 12.5, Output: 625},
 }
+
+// The official promotion ends at midnight March 1 Pacific time (UTC−08:00).
+var quota62UltrafastPromoEnd = time.Date(2027, time.March, 1, 8, 0, 0, 0, time.UTC)
 
 type liveQuotaPoint struct {
 	At               time.Time `json:"at"`
@@ -82,6 +88,7 @@ type liveQuotaModelCost struct {
 type liveQuotaTarget struct {
 	Model        string       `json:"model"`
 	Tier         string       `json:"tier"`
+	Multiplier   *float64     `json:"speed_multiplier,omitempty"`
 	TokensFull   *float64     `json:"total_tokens_full"`
 	TokensRemain *float64     `json:"total_tokens_remaining"`
 	MixedRate    *float64     `json:"credits_per_million_mixed_tokens"`
@@ -168,23 +175,45 @@ func quotaRate(model string) (liveQuotaModelRate, bool) {
 	return liveQuotaModelRate{}, false
 }
 
-func quotaCost(u liveQuotaUsage, rules liveQuotaRules) (cost float64, priced, long bool) {
+func quotaSpeedMultiplier(rate liveQuotaModelRate, tier string, rules liveQuotaRules, at time.Time) (float64, bool) {
+	is62 := rate.Model == "gpt-6.2-astra" || rate.Model == "gpt-6.2-sol"
+	switch tier {
+	case "default":
+		return 1, true
+	case "fast", "priority":
+		if is62 {
+			return 2, true
+		}
+		return rules.Fast, true
+	case "ultrafast":
+		if !rate.Ultrafast {
+			return 0, false
+		}
+		if !is62 {
+			return rules.Ultra, true
+		}
+		if rules.Basis == "credits" {
+			if at.IsZero() {
+				return 0, false
+			}
+			if at.Before(quota62UltrafastPromoEnd) {
+				return 3, true
+			}
+		}
+		return 6, true
+	default:
+		return 0, false
+	}
+}
+
+func quotaCost(u liveQuotaUsage, rules liveQuotaRules, at time.Time) (cost float64, priced, long bool) {
 	long = u.Tokens.Input > 272000
 	rate, ok := quotaRate(u.Model)
 	if !ok || u.Tokens.Input < 0 || u.Tokens.Output < 0 || u.Tokens.Cached < 0 || u.Tokens.Cached > u.Tokens.Input {
 		return 0, false, long
 	}
-	multiplier := 1.0
-	switch u.ServiceTier {
-	case "default":
-	case "fast", "priority":
-		multiplier = rules.Fast
-	case "ultrafast":
-		if rate.Model != "gpt-6-astra" && rate.Model != "gpt-6.1-sol" {
-			return 0, false, long
-		}
-		multiplier = rules.Ultra
-	default:
+	multiplier, ok := quotaSpeedMultiplier(rate, u.ServiceTier, rules, at)
+	if !ok {
 		return 0, false, long
 	}
 	inputMultiplier, outputMultiplier := 1.0, 1.0
@@ -197,7 +226,7 @@ func quotaCost(u liveQuotaUsage, rules liveQuotaRules) (cost float64, priced, lo
 }
 
 func quotaRules(r *http.Request) liveQuotaRules {
-	rules := liveQuotaRules{AsOf: "2026-10-27", Basis: "included", Fast: 2.5, Ultra: 8, Context: "standard", Models: liveQuotaModelRates,
+	rules := liveQuotaRules{AsOf: "2026-11-18", Basis: "included", Fast: 2.5, Ultra: 8, Context: "standard", Models: liveQuotaModelRates,
 		ContextNote: "完整上下文输入逐次计入，缓存输入按独立积分价；Codex 未明确公布长上下文额外倍率。当前按标准积分表校准等效容量。",
 		Sources: []map[string]string{
 			{"title": "Codex 积分表与额度说明", "url": "https://learn.chatgpt.com/docs/pricing"},
@@ -214,7 +243,7 @@ func quotaRules(r *http.Request) liveQuotaRules {
 	return rules
 }
 
-func newQuotaTarget(r *http.Request) liveQuotaTarget {
+func newQuotaTarget(r *http.Request, rules liveQuotaRules, asOf time.Time) liveQuotaTarget {
 	model, tier := r.URL.Query().Get("model"), r.URL.Query().Get("tier")
 	if model == "" {
 		model = "gpt-6.1-sol"
@@ -222,12 +251,18 @@ func newQuotaTarget(r *http.Request) liveQuotaTarget {
 	if tier == "" {
 		tier = "default"
 	}
-	return liveQuotaTarget{Model: model, Tier: tier, Mix: liveQuotaMix{Source: "insufficient", MinResponses: 10}}
+	target := liveQuotaTarget{Model: model, Tier: tier, Mix: liveQuotaMix{Source: "insufficient", MinResponses: 10}}
+	if rate, ok := quotaRate(model); ok {
+		if multiplier, priced := quotaSpeedMultiplier(rate, tier, rules, asOf); priced {
+			target.Multiplier = quotaPointer(multiplier)
+		}
+	}
+	return target
 }
 
 func quotaPointer(n float64) *float64 { return &n }
 
-func quotaTargetMix(target liveQuotaTarget, records []liveQuotaRecord, bucket string, rules liveQuotaRules) liveQuotaTarget {
+func quotaTargetMix(target liveQuotaTarget, records []liveQuotaRecord, bucket string, rules liveQuotaRules, asOf time.Time) liveQuotaTarget {
 	// Choose the target's observed workload after ten responses. Until then,
 	// prefer whichever of Astra and Sol has more actual records in this range.
 	// A small sample remains visible as provisional; never invent a fixed mix.
@@ -280,7 +315,9 @@ func quotaTargetMix(target liveQuotaTarget, records []liveQuotaRecord, bucket st
 		mix.Output += t.Output
 		// Reprice each real request, preserving its cache split and context
 		// length. Applying a long-context rule to an average would be wrong.
-		pricedCost, priced, long := quotaCost(liveQuotaUsage{Model: target.Model, ServiceTier: target.Tier, Tokens: t}, rules)
+		// The sample supplies token proportions. The selected range end supplies
+		// the rate for the target capacity estimate, including any promotions.
+		pricedCost, priced, long := quotaCost(liveQuotaUsage{Model: target.Model, ServiceTier: target.Tier, Tokens: t}, rules, asOf)
 		cost += pricedCost
 		valid = valid && priced
 		if long {
@@ -360,7 +397,8 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 	}
 	m.trendViews["quota/"+view] = liveTrendRequest{from: from, seen: time.Now()}
 	m.updateTrendScope(time.Now())
-	data := liveQuotaData{From: from, To: to, UpdatedAt: m.updated, Files: len(m.files), Series: []liveQuotaSeries{}, Rules: quotaRules(r), Changes: []liveQuotaChange{}, Estimate: liveQuotaEstimate{Status: "insufficient", Notes: []string{}, Models: []liveQuotaModelCost{}, Target: newQuotaTarget(r)}}
+	rules := quotaRules(r)
+	data := liveQuotaData{From: from, To: to, UpdatedAt: m.updated, Files: len(m.files), Series: []liveQuotaSeries{}, Rules: rules, Changes: []liveQuotaChange{}, Estimate: liveQuotaEstimate{Status: "insufficient", Notes: []string{}, Models: []liveQuotaModelCost{}, Target: newQuotaTarget(r, rules, to)}}
 	if m.discovered.IsZero() {
 		data.PendingFiles++
 	}
@@ -453,7 +491,7 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 		data.Latest = &last
 		forecast := forecastQuota(group, r, from, to, data.PendingFiles)
 		data.Forecast = &forecast
-		target := quotaTargetMix(data.Estimate.Target, displayRecords, group.Bucket, data.Rules)
+		target := quotaTargetMix(data.Estimate.Target, displayRecords, group.Bucket, data.Rules, to)
 		estimate, changes := estimateQuota(group, displayRecords, data.Rules, target, from, data.PendingFiles)
 		data.Estimate = estimate
 		for i := len(changes) - 1; i >= 0; i-- {
@@ -492,7 +530,7 @@ func quotaUsageBetween(records []liveQuotaRecord, bucket string, from, to time.T
 			continue
 		}
 		u := *record.Usage
-		cost, ok, long := quotaCost(u, rules)
+		cost, ok, long := quotaCost(u, rules, record.At)
 		if record.Bucket != bucket {
 			ok = false
 		}

@@ -26,8 +26,8 @@ func (s *liveNodeService) runSmartNodes(ctx context.Context, selected []*liveNod
 			endpointBlocked[block.Node+"/"+block.Scope] = block
 		}
 	}
-	labels := map[string]string{"clash": "Clash", "http": "HTTP", "websocket": "WebSocket"}
-	for _, endpoint := range []string{"clash", "http", "websocket"} {
+	labels := map[string]string{"clash": "Clash", "http": "HTTP", "websocket": "WebSocket", "download": "单连接下载", "upload": "单连接上传"}
+	for _, endpoint := range []string{"clash", "http", "websocket", "download", "upload"} {
 		if !selectedTests[endpoint] {
 			continue
 		}
@@ -95,7 +95,11 @@ func (s *liveNodeService) runSmartNodes(ctx context.Context, selected []*liveNod
 				}
 				block := liveNodeSmartExclusion(job.Options, row)
 				if block != nil {
-					row.Note = block.Message
+					if row.Note != "" {
+						row.Note += "；" + block.Message
+					} else {
+						row.Note = block.Message
+					}
 					if block.Scope == "all" {
 						allBlocked[row.Node] = *block
 					} else {
@@ -122,8 +126,8 @@ func liveNodeSmartExclusion(options liveNodeOptions, row liveNodeResult) *liveNo
 		if *row.Delay > float64(options.ClashMaxDelayMS) {
 			return &liveNodeExclusion{Node: row.Node, Scope: "all", Reason: "clash_slow", Message: fmt.Sprintf("Clash 延迟 %.0f ms 超过 %d ms，已排除整节点", *row.Delay, options.ClashMaxDelayMS)}
 		}
-	} else if row.Outcome != "auth_reached" && row.Outcome != "upgrade_accepted" {
-		label := map[string]string{"http": "HTTP", "websocket": "WebSocket"}[row.Endpoint]
+	} else if row.Outcome != "auth_reached" && row.Outcome != "upgrade_accepted" && row.Outcome != "bandwidth_ok" {
+		label := map[string]string{"http": "HTTP", "websocket": "WebSocket", "download": "单连接下载", "upload": "单连接上传"}[row.Endpoint]
 		return &liveNodeExclusion{Node: row.Node, Scope: row.Endpoint, Reason: row.Endpoint + "_failed", Message: label + " 失败，仅停止该项目的后续轮次"}
 	}
 	return nil

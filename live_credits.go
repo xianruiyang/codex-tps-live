@@ -29,7 +29,7 @@ func creditPolicy(rules liveQuotaRules) liveCreditPolicy {
 }
 
 func priceResponse(response *liveResponse, rules liveQuotaRules) liveCreditUsage {
-	cost, priced, long := quotaCost(liveQuotaUsage{Model: response.Model, ServiceTier: response.ServiceTier, Tokens: response.Tokens}, rules)
+	cost, priced, long := quotaCost(liveQuotaUsage{Model: response.Model, ServiceTier: response.ServiceTier, Tokens: response.Tokens}, rules, response.RecordedAt)
 	usage := liveCreditUsage{}
 	if long {
 		usage.LongContext = 1
