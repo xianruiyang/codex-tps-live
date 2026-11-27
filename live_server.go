@@ -24,7 +24,7 @@ import (
 //go:embed web/index.html web/family.html web/trends.html web/quota.html web/nodes.html web/node_plans.html web/ws_diagnostics.html web/traffic.html
 var liveAssets embed.FS
 
-const liveVersion = "0.22.2"
+const liveVersion = "0.22.3"
 
 // RunLive starts a loopback-only dashboard. Codex logs remain read-only. Only
 // authorized node tests and their saved continuations make outbound probes.
