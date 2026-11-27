@@ -166,7 +166,12 @@ func RunLive(arguments []string, stdout, stderr io.Writer) int {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		writeLiveJSON(w, monitor.quotaData(r, from, to))
+		recordFrom, recordTo, err := quotaRecordRange(r, from, to)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeLiveJSON(w, monitor.quotaData(r, from, to, recordFrom, recordTo))
 	})
 	mux.HandleFunc("/api/session", func(w http.ResponseWriter, r *http.Request) {
 		offset := queryInt(r, "offset", 0, 1000000)

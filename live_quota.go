@@ -150,20 +150,23 @@ type liveQuotaChange struct {
 }
 
 type liveQuotaData struct {
-	From         time.Time          `json:"from"`
-	To           time.Time          `json:"to"`
-	UpdatedAt    time.Time          `json:"updated_at"`
-	PendingFiles int                `json:"pending_files"`
-	Files        int                `json:"files"`
-	HistoryPath  string             `json:"history_path"`
-	HistoryError string             `json:"history_error"`
-	Series       []liveQuotaSeries  `json:"series"`
-	Selected     string             `json:"selected_series"`
-	Latest       *liveQuotaPoint    `json:"latest"`
-	Rules        liveQuotaRules     `json:"rules"`
-	Estimate     liveQuotaEstimate  `json:"estimate"`
-	Changes      []liveQuotaChange  `json:"changes"`
-	Forecast     *liveQuotaForecast `json:"forecast,omitempty"`
+	From            time.Time                 `json:"from"`
+	To              time.Time                 `json:"to"`
+	RecordFrom      time.Time                 `json:"record_from"`
+	RecordTo        time.Time                 `json:"record_to"`
+	UpdatedAt       time.Time                 `json:"updated_at"`
+	PendingFiles    int                       `json:"pending_files"`
+	Files           int                       `json:"files"`
+	HistoryPath     string                    `json:"history_path"`
+	HistoryError    string                    `json:"history_error"`
+	Series          []liveQuotaSeries         `json:"series"`
+	Selected        string                    `json:"selected_series"`
+	Latest          *liveQuotaPoint           `json:"latest"`
+	Rules           liveQuotaRules            `json:"rules"`
+	Estimate        liveQuotaEstimate         `json:"estimate"`
+	Changes         []liveQuotaChange         `json:"changes"`
+	Forecast        *liveQuotaForecast        `json:"forecast,omitempty"`
+	CapacityHistory *liveQuotaCapacityHistory `json:"capacity_history,omitempty"`
 }
 
 func quotaRate(model string) (liveQuotaModelRate, bool) {
@@ -385,50 +388,22 @@ func quotaShortRollback(points []liveQuotaPoint, index int, accepted liveQuotaPo
 	return false
 }
 
-func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaData {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	view := r.URL.Query().Get("view")
-	if view == "" {
-		view = "default"
+func quotaRecordRange(r *http.Request, from, to time.Time) (time.Time, time.Time, error) {
+	query := r.URL.Query()
+	if !query.Has("record_from") && !query.Has("record_to") {
+		return from, to, nil
 	}
-	if m.trendViews == nil {
-		m.trendViews = map[string]liveTrendRequest{}
+	start, startErr := time.Parse(time.RFC3339Nano, query.Get("record_from"))
+	end, endErr := time.Parse(time.RFC3339Nano, query.Get("record_to"))
+	if startErr != nil || endErr != nil || !start.Before(end) {
+		return time.Time{}, time.Time{}, fmt.Errorf("记录范围需要有效的起止时间，且开始时间必须早于结束时间")
 	}
-	m.trendViews["quota/"+view] = liveTrendRequest{from: from, seen: time.Now()}
-	m.updateTrendScope(time.Now())
-	rules := quotaRules(r)
-	data := liveQuotaData{From: from, To: to, UpdatedAt: m.updated, Files: len(m.files), Series: []liveQuotaSeries{}, Rules: rules, Changes: []liveQuotaChange{}, Estimate: liveQuotaEstimate{Status: "insufficient", Notes: []string{}, Models: []liveQuotaModelCost{}, Target: newQuotaTarget(r, rules, to)}}
-	if m.discovered.IsZero() {
-		data.PendingFiles++
-	}
-	for _, f := range m.files {
-		f.requestSince(m.trendSince)
-		if !f.initialized || f.offset < f.size || f.rangeMissing(from) {
-			data.PendingFiles++
-		}
-	}
-	if m.quota == nil {
-		data.HistoryError = "额度记录尚未初始化"
-		return data
-	}
-	data.HistoryPath, data.HistoryError = m.quota.path, m.quota.errorText
-	records := make([]liveQuotaRecord, 0, len(m.quota.records))
-	for _, record := range m.quota.records {
-		if !record.At.After(to) {
-			records = append(records, record)
-		}
-	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].At.Equal(records[j].At) {
-			return records[i].ID < records[j].ID
-		}
-		return records[i].At.Before(records[j].At)
-	})
-	// The chart's moving start must not discard a recorded calibration baseline.
-	// Keep all history through to for segmentation; only the target mix uses from.
-	displayStart := sort.Search(len(records), func(i int) bool { return !records[i].At.Before(from) })
-	displayRecords := records[displayStart:]
+	return start, end, nil
+}
+
+// Build quota segments through a single as-of time. Later reports can confirm
+// a stale rollback, so a longer chart must not change an earlier estimate.
+func quotaSeriesByWindow(records []liveQuotaRecord, now time.Time) map[string]*liveQuotaSeries {
 	groups := map[string]*liveQuotaSeries{}
 	for _, record := range records {
 		for name, window := range map[string]*liveQuotaWindow{"primary": record.Primary, "secondary": record.Secondary} {
@@ -442,7 +417,7 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 				groups[id] = g
 			}
 			g.WindowMinutes, g.PlanType = window.WindowMinutes, record.PlanType
-			g.Points = append(g.Points, liveQuotaPoint{At: record.At, UsedPercent: window.UsedPercent, RemainingPercent: max(0, 100-window.UsedPercent), ResetsAt: window.ResetsAt, WindowMinutes: window.WindowMinutes, PlanType: record.PlanType, Balance: record.Balance, Expired: window.ResetsAt > 0 && window.ResetsAt <= time.Now().Unix()})
+			g.Points = append(g.Points, liveQuotaPoint{At: record.At, UsedPercent: window.UsedPercent, RemainingPercent: max(0, 100-window.UsedPercent), ResetsAt: window.ResetsAt, WindowMinutes: window.WindowMinutes, PlanType: record.PlanType, Balance: record.Balance, Expired: window.ResetsAt > 0 && window.ResetsAt <= now.Unix()})
 		}
 	}
 	for _, g := range groups {
@@ -452,26 +427,109 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 			}
 			return g.Points[i].At.Before(g.Points[j].At)
 		})
-		segment := 1
-		accepted := g.Points[0]
-		for i := range g.Points {
-			if i > 0 {
-				current := g.Points[i]
-				if quotaShortRollback(g.Points, i, accepted) {
-					g.Points[i].Stale, g.Points[i].Segment = true, segment
-					continue
-				}
-				if current.UsedPercent < accepted.UsedPercent || quotaWindowChanged(accepted, current) || current.At.Sub(accepted.At) > 6*time.Hour {
-					segment++
-				}
+		classifyQuotaPoints(g.Points)
+	}
+	return groups
+}
+
+func classifyQuotaPoints(points []liveQuotaPoint) {
+	if len(points) == 0 {
+		return
+	}
+	segment := 1
+	accepted := points[0]
+	for i := range points {
+		points[i].Stale = false
+		if i > 0 {
+			current := points[i]
+			if quotaShortRollback(points, i, accepted) {
+				points[i].Stale, points[i].Segment = true, segment
+				continue
 			}
-			g.Points[i].Segment = segment
-			accepted = g.Points[i]
+			if current.UsedPercent < accepted.UsedPercent || quotaWindowChanged(accepted, current) || current.At.Sub(accepted.At) > 6*time.Hour {
+				segment++
+			}
 		}
+		points[i].Segment = segment
+		accepted = points[i]
+	}
+}
+
+func (m *liveMonitor) quotaData(r *http.Request, from, to, recordFrom, recordTo time.Time) liveQuotaData {
+	m.mu.Lock()
+	query := r.URL.Query()
+	view := query.Get("view")
+	if view == "" {
+		view = "default"
+	}
+	if m.trendViews == nil {
+		m.trendViews = map[string]liveTrendRequest{}
+	}
+	includeHistory := query.Has("record_from")
+	lookback := to.Sub(from)
+	earliest := from
+	if includeHistory && recordFrom.Add(-lookback).Before(earliest) {
+		earliest = recordFrom.Add(-lookback)
+	}
+	now := time.Now()
+	m.trendViews["quota/"+view] = liveTrendRequest{from: earliest, seen: now}
+	m.updateTrendScope(now)
+	rules := quotaRules(r)
+	data := liveQuotaData{
+		From: from, To: to, RecordFrom: recordFrom, RecordTo: recordTo,
+		UpdatedAt: m.updated, Files: len(m.files), Series: []liveQuotaSeries{}, Rules: rules,
+		Changes:  []liveQuotaChange{},
+		Estimate: liveQuotaEstimate{Status: "insufficient", Notes: []string{}, Models: []liveQuotaModelCost{}, Target: newQuotaTarget(r, rules, to)},
+	}
+	calcPending := 0
+	if m.discovered.IsZero() {
+		data.PendingFiles, calcPending = 1, 1
+	}
+	for _, f := range m.files {
+		f.requestSince(m.trendSince)
+		inProgress := !f.initialized || f.offset < f.size
+		if inProgress || f.rangeMissing(earliest) {
+			data.PendingFiles++
+		}
+		if inProgress || f.rangeMissing(from) {
+			calcPending++
+		}
+	}
+	if m.quota == nil {
+		data.HistoryError = "额度记录尚未初始化"
+		m.mu.Unlock()
+		return data
+	}
+	data.HistoryPath, data.HistoryError = m.quota.path, m.quota.errorText
+	latestEnd := to
+	if includeHistory && recordTo.After(latestEnd) {
+		latestEnd = recordTo
+	}
+	records := make([]liveQuotaRecord, 0, len(m.quota.records))
+	for _, record := range m.quota.records {
+		if !record.At.After(latestEnd) {
+			if record.Usage != nil {
+				usage := *record.Usage
+				record.Usage = &usage
+			}
+			records = append(records, record)
+		}
+	}
+	// History renders from this snapshot without blocking log ingestion.
+	m.mu.Unlock()
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].At.Equal(records[j].At) {
+			return records[i].ID < records[j].ID
+		}
+		return records[i].At.Before(records[j].At)
+	})
+	calcEnd := sort.Search(len(records), func(i int) bool { return records[i].At.After(to) })
+	calcGroups := quotaSeriesByWindow(records[:calcEnd], now)
+	for _, g := range calcGroups {
 		data.Series = append(data.Series, *g)
 	}
 	sort.Slice(data.Series, func(i, j int) bool { return data.Series[i].ID < data.Series[j].ID })
-	bucket, window := r.URL.Query().Get("bucket"), r.URL.Query().Get("window")
+	bucket, window := query.Get("bucket"), query.Get("window")
 	if window != "secondary" {
 		window = "primary"
 	}
@@ -486,19 +544,30 @@ func (m *liveMonitor) quotaData(r *http.Request, from, to time.Time) liveQuotaDa
 	}
 	selected := bucket + "/" + window
 	data.Selected = selected
-	if group := groups[selected]; group != nil && len(group.Points) > 0 {
+	if group := calcGroups[selected]; group != nil {
 		last := group.Points[len(group.Points)-1]
 		data.Latest = &last
-		forecast := forecastQuota(group, r, from, to, data.PendingFiles)
+		forecast := forecastQuota(group, r, from, to, calcPending)
 		data.Forecast = &forecast
-		target := quotaTargetMix(data.Estimate.Target, displayRecords, group.Bucket, data.Rules, to)
-		estimate, changes := estimateQuota(group, displayRecords, data.Rules, target, from, data.PendingFiles)
+		calcStart := sort.Search(calcEnd, func(i int) bool { return !records[i].At.Before(from) })
+		calcRecords := records[calcStart:calcEnd]
+		target := quotaTargetMix(data.Estimate.Target, calcRecords, group.Bucket, data.Rules, to)
+		estimate, changes := estimateQuota(group, calcRecords, data.Rules, target, from, calcPending)
 		data.Estimate = estimate
 		for i := len(changes) - 1; i >= 0; i-- {
 			if !changes[i].At.Before(from) {
 				data.Changes = append(data.Changes, changes[i])
 			}
 		}
+	}
+	if includeHistory {
+		recordEnd := sort.Search(len(records), func(i int) bool { return records[i].At.After(recordTo) })
+		recordGroups := calcGroups
+		if recordEnd != calcEnd {
+			recordGroups = quotaSeriesByWindow(records[:recordEnd], now)
+		}
+		history := rollingQuotaCapacity(r.Context(), recordGroups[selected], records[:recordEnd], rules, recordFrom, minTime(recordTo, now), lookback)
+		data.CapacityHistory = &history
 	}
 	for i := range data.Series {
 		// Keep both ends of each plateau, without returning thousands of identical points.
@@ -573,16 +642,8 @@ func quotaUsageBetween(records []liveQuotaRecord, bucket string, from, to time.T
 	return credits, priced, unpriced, unknown, longCount, models
 }
 
-func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules liveQuotaRules, target liveQuotaTarget, from time.Time, pending int) (liveQuotaEstimate, []liveQuotaChange) {
-	e := liveQuotaEstimate{Status: "insufficient", Target: target, Notes: []string{}, Models: []liveQuotaModelCost{}}
-	changes := []liveQuotaChange{}
-	points := group.Points
+func forEachQuotaChange(points []liveQuotaPoint, from time.Time, visit func(anchor, point liveQuotaPoint, excluded bool)) (baselineReady bool, staleCount int) {
 	anchor := points[0]
-	latest := points[len(points)-1]
-	models := map[string]liveQuotaModelCost{}
-	calibrationRuns, lastCalibrationSegment := 0, -1
-	baselineReady := false
-	staleCount := 0
 	for _, point := range points[1:] {
 		if point.Stale {
 			staleCount++
@@ -601,19 +662,33 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 			anchor, baselineReady = point, true
 			continue
 		}
+		// A segment's first observed rise establishes a baseline. The time
+		// before that rise may contain only part of the observed consumption.
+		visit(anchor, point, !baselineReady)
+		anchor, baselineReady = point, true
+	}
+	return baselineReady, staleCount
+}
+
+func quotaCalibrationCompatible(point, latest liveQuotaPoint) bool {
+	return point.WindowMinutes == latest.WindowMinutes &&
+		(point.PlanType == "" || latest.PlanType == "" || point.PlanType == latest.PlanType)
+}
+
+func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules liveQuotaRules, target liveQuotaTarget, from time.Time, pending int) (liveQuotaEstimate, []liveQuotaChange) {
+	e := liveQuotaEstimate{Status: "insufficient", Target: target, Notes: []string{}, Models: []liveQuotaModelCost{}}
+	changes := []liveQuotaChange{}
+	points := group.Points
+	latest := points[len(points)-1]
+	models := map[string]liveQuotaModelCost{}
+	calibrationRuns, lastCalibrationSegment := 0, -1
+	baselineReady, staleCount := forEachQuotaChange(points, from, func(anchor, point liveQuotaPoint, excluded bool) {
 		cost, priced, unpriced, unknown, longCount, breakdown := quotaUsageBetween(records, group.Bucket, anchor.At, point.At, rules)
 		delta := point.UsedPercent - anchor.UsedPercent
-		change := liveQuotaChange{At: point.At, FromPercent: anchor.UsedPercent, ToPercent: point.UsedPercent, DeltaPercent: delta, Credits: cost, Priced: priced, Unpriced: unpriced, Segment: point.Segment}
-		if !baselineReady {
-			// Collected history or a new segment may start partway through a step.
-			// Its first observed rise establishes a baseline, not a full interval.
-			change.Excluded = true
-			baselineReady = true
-		} else if cost > 0 {
+		change := liveQuotaChange{At: point.At, FromPercent: anchor.UsedPercent, ToPercent: point.UsedPercent, DeltaPercent: delta, Credits: cost, Priced: priced, Unpriced: unpriced, Segment: point.Segment, Excluded: excluded}
+		if !excluded && cost > 0 {
 			change.Full = quotaPointer(cost * 100 / delta)
-			compatible := point.WindowMinutes == latest.WindowMinutes &&
-				(point.PlanType == "" || latest.PlanType == "" || point.PlanType == latest.PlanType)
-			if compatible {
+			if quotaCalibrationCompatible(point, latest) {
 				if e.Intervals == 0 {
 					e.From = anchor.At
 				}
@@ -645,8 +720,7 @@ func estimateQuota(group *liveQuotaSeries, records []liveQuotaRecord, rules live
 			}
 		}
 		changes = append(changes, change)
-		anchor = point
-	}
+	})
 	for _, model := range models {
 		e.Models = append(e.Models, model)
 	}
